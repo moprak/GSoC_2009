@@ -1,0 +1,5052 @@
+Index: kstars/geolocation.h
+===================================================================
+--- kstars/geolocation.h	(revision 1010978)
++++ kstars/geolocation.h	(revision 1010979)
+@@ -137,7 +137,7 @@
+ 
+     /**@return time zone, including any DST correction.
+     	*/
+-    double TZ() const { return TimeZone + TZrule->deltaTZ(); }
++    double TZ() const { if( TZrule ) return TimeZone + TZrule->deltaTZ(); return TimeZone; }
+ 
+     /**@return pointer to time zone rule object
+     	*/
+Index: kstars/tools/observinglist.h
+===================================================================
+--- kstars/tools/observinglist.h	(revision 1010978)
++++ kstars/tools/observinglist.h	(revision 1010979)
+@@ -25,6 +25,7 @@
+ #include <kio/copyjob.h>
+ 
+ #include "ui_observinglist.h"
++#include "kstars.h"
+ #include "skyobjects/skyobject.h"
+ #include "kstarsdatetime.h"
+ #include "geolocation.h"
+@@ -146,10 +147,31 @@
+         */
+     void setSaveImages();
+ 
++    /**@short This is the declaration of the event filter function
++     * which is installed on the KImageFilePreview and the TabeView
++     */
+     bool eventFilter( QObject *obj, QEvent *event );
+ 
++    /**@short saves a thumbnail image for the details dialog
++     * from the downloaded image
++     */
+     void saveThumbImage();
+ 
++    QString getTime( SkyObject *o ) { return TimeHash.value( o->name(), QTime( 30,0,0 ) ).toString( "h:mm:ss AP" ); }
++
++    QTime scheduledTime( SkyObject *o ) { return TimeHash.value( o->name(), o->transitTime( dt, geo ) ); }
++
++    void setTime( SkyObject *o, QTime t ) { TimeHash.insert( o->name(), t); }
++
++    GeoLocation* geoLocation() { return geo; }
++
++    KStarsDateTime dateTime() { return dt; }
++    
++    /**@short return the object with the name as the passed
++     * QString from the Session List, return null otherwise
++     */
++    SkyObject* findObjectByName( QString name );
++
+ public slots:
+     /**@short add a new object to list
+         *@p o pointer to the object to add to the list
+@@ -296,6 +318,14 @@
+         */
+     void slotDSS() { slotGetImage( true ); }
+ 
++    /**@short Export a target list to the comast compliant format
++        */
++    void slotOALExport(); 
++
++    void slotAddVisibleObj();
++
++    void selectObject( SkyObject *o );
++
+ protected slots:
+     void slotClose();
+     void downloadReady();
+@@ -307,8 +337,8 @@
+     QList<SkyObject*> m_ObservingList, m_SessionList;
+     SkyObject *LogObject, *m_CurrentObject;
+     uint noNameStars;
+-    bool isModified, bIsLarge, sessionView, dss, singleSelection, showScope, noSelection;
+-    QString FileName, SessionName, CurrentImage, DSSUrl, SDSSUrl, ThumbImage, CurrentImagePath, CurrentTempPath;
++    bool isModified, bIsLarge, sessionView, dss, singleSelection, showScope, noSelection, nativeSave;
++    QString FileName, CurrentImage, DSSUrl, SDSSUrl, ThumbImage, CurrentImagePath, CurrentTempPath;
+     char decsgn;
+     KStarsDateTime dt;
+     GeoLocation *geo;
+Index: kstars/tools/wutdialog.h
+===================================================================
+--- kstars/tools/wutdialog.h	(revision 1010978)
++++ kstars/tools/wutdialog.h	(revision 1010979)
+@@ -22,6 +22,7 @@
+ #include <kdialog.h>
+ #include <q3listview.h>
+ #include "kstarsdatetime.h"
++#include "kstars.h"
+ #include "ui_wutdialog.h"
+ 
+ #define NCATEGORY 8
+@@ -48,10 +49,23 @@
+ public:
+ 
+     /**@short Constructor*/
+-    WUTDialog(QWidget *ks, bool session = false);
++    WUTDialog( KStars *ks, bool session = false,GeoLocation *geo = KStars::Instance()->geo(), KStarsDateTime lt = KStars::Instance()->data()->lt() );
+     /**@short Destructor*/
+     ~WUTDialog();
+ 
++    /**@short Check visibility of object
++        *@p o the object to check
++        *@return true if visible
++        */
++    bool checkVisibility(SkyObject *o);
++
++public slots:
++
++    /**@short Determine which objects are visible, and store them in
++        *an array of lists, classified by object type 
++        */
++    void init();
++
+ private slots:
+ 
+     /**@short Load the list of visible objects for selected object type.
+@@ -59,11 +73,6 @@
+         */
+     void slotLoadList(const QString &category);
+ 
+-    /**@short Determine which objects are visible, and store them in
+-        *an array of lists, classified by object type 
+-        */
+-    void init();
+-
+     /**@short display the rise/transit/set times for selected object
+         */
+     void slotDisplayObject(const QString &name);
+@@ -118,11 +127,6 @@
+     /**@short Initialize catgory list, used in constructor */
+     void initCategories();
+ 
+-    /**@short Check visibility of object
+-        *@p o the object to check
+-        *@return true if visible
+-        */
+-    bool checkVisibility(SkyObject *o);
+ 
+     QTime sunRiseTomorrow, sunSetToday, sunRiseToday, moonRise, moonSet;
+     KStarsDateTime T0, UT0, Tomorrow, TomorrowUT, Evening, EveningUT;
+Index: kstars/tools/observinglist.ui
+===================================================================
+--- kstars/tools/observinglist.ui	(revision 1010978)
++++ kstars/tools/observinglist.ui	(revision 1010979)
+@@ -162,6 +162,13 @@
+       </widget>
+      </item>
+      <item>
++      <widget class="QPushButton" name="OALExport">
++       <property name="text">
++        <string>Export to OAL</string>
++       </property>
++      </widget>
++     </item>
++     <item>
+       <spacer name="Spacer1">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+Index: kstars/tools/wutdialog.cpp
+===================================================================
+--- kstars/tools/wutdialog.cpp	(revision 1010978)
++++ kstars/tools/wutdialog.cpp	(revision 1010979)
+@@ -42,8 +42,8 @@
+     setupUi( this );
+ }
+ 
+-WUTDialog::WUTDialog( QWidget *ks, bool _session ) :
+-        KDialog( ks ), EveningFlag(0),
++WUTDialog::WUTDialog( KStars *ks, bool _session, GeoLocation *_geo, KStarsDateTime _lt ) :
++        KDialog( ks ), kstars(ks), EveningFlag(0),
+         timer(NULL)
+ {
+     kstars = KStars::Instance();
+@@ -54,9 +54,9 @@
+     setModal( false );
+ 
+     //initialize location and date to current KStars settings:
+-    geo = kstars->geo();
++    geo = _geo; 
+     session = _session;
+-    T0 = kstars->data()->lt();
++    T0 = _lt;
+     //If the Time is earlier than 6:00 am, assume the user wants the night of the previous date
+     if ( T0.time().hour() < 6 )
+         T0 = T0.addDays( -1 );
+Index: kstars/tools/observinglist.cpp
+===================================================================
+--- kstars/tools/observinglist.cpp	(revision 1010978)
++++ kstars/tools/observinglist.cpp	(revision 1010979)
+@@ -61,6 +61,8 @@
+ #include "imageviewer.h"
+ #include "thumbnailpicker.h"
+ #include "obslistpopupmenu.h"
++#include "comast/log.h"
++#include "comast/comast.h"
+ 
+ #include <config-kstars.h>
+ 
+@@ -80,7 +82,6 @@
+     setupUi( this );
+ }
+ 
+-
+ //
+ // ObservingList
+ // ---------------------------------
+@@ -96,6 +97,8 @@
+     dt = KStarsDateTime::currentDateTime();
+     geo = ks->geo();
+     sessionView = false;
++    nativeSave = true;
++    FileName = "";
+     pmenu = new ObsListPopupMenu( KStars::Instance() );
+     //Set up the Table Views
+     m_Model = new QStandardItemModel( 0, 5, this );
+@@ -180,6 +183,8 @@
+              this, SLOT( slotSaveImages() ) );
+     connect( ui->DeleteImages, SIGNAL( clicked() ),
+              this, SLOT( slotDeleteImages() ) );
++    connect( ui->OALExport, SIGNAL( clicked() ),
++             this, SLOT( slotOALExport() ) );  
+     //Add icons to Push Buttons
+     ui->OpenButton->setIcon( KIcon("document-open") );
+     ui->SaveButton->setIcon( KIcon("document-save") );
+@@ -196,6 +201,7 @@
+     ui->saveImages->setEnabled( false );
+     ui->SaveImage->setEnabled( false );
+     ui->DeleteImage->setEnabled( false );
++    ui->OALExport->setEnabled( false );
+ 
+     slotLoadWishList(); //Load the wishlist from disk if present
+     m_CurrentObject = 0;
+@@ -215,6 +221,11 @@
+     bool addToWishList=true;
+     if ( ! obj ) obj = ks->map()->clickedObject();
+ 
++    if( obj->name() == "star" ) {
++        KMessageBox::sorry(0, i18n( "Unnamed stars are not supported in the observing lists"));
++        return;
++    }
++        
+     //First, make sure object is not already in the list
+     if ( obsList().contains( obj ) ) {
+         addToWishList = false;
+@@ -395,6 +406,8 @@
+         }
+         //we've removed all selected objects, so clear the selection
+         ui->SessionView->selectionModel()->clear();
++        //Update the lists in the Execute window as well
++        ks->getExecute()->init();
+     } else {
+          //Find each object by name in the observing list, and remove it
+          //Go backwards so item alignment doesn't get screwed up as rows are removed.
+@@ -712,7 +725,9 @@
+ }
+ 
+ void ObservingList::slotWUT() {
+-    QPointer<WUTDialog> w = new WUTDialog( ks, sessionView );
++    KStarsDateTime lt = dt;
++    lt.setTime( QTime(8,0,0) );
++    QPointer<WUTDialog> w = new WUTDialog( ks, sessionView, geo, lt );
+     w->exec();
+     delete w;
+ }
+@@ -838,43 +853,16 @@
+         //First line is the name of the list. The rest of the file is
+         //object names, one per line. With the TimeHash value if present
+         QTextStream istream( &f );
+-        QString line;
+-        SessionName = istream.readLine();
+-        line = istream.readLine();
+-        if( ! line.contains( '|' ) ) {
+-            SessionName = "";
+-            KMessageBox::sorry( 0, i18n( "Old formatted Observing Lists are not supported " ), i18n( "Invalid List" ) );
+-            return;
+-        }
+-        QStringList fields = line.split( '|' ); 
+-        geo = ks->data()->locationNamed( fields[0], fields[1], fields[2] );
+-        ui->SetLocation -> setText( geo -> fullName() );
+-        dt.setDate( QDate::fromString( fields[3], "ddMMyyyy" ) );
+-        ui->DateEdit->setDate( dt.date() );
+-        while ( ! istream.atEnd() ) {
+-            line = istream.readLine();
+-            QStringList parts = line.split( '|' ); 
+-            //If the object is named "star", add it by coordinates
+-            SkyObject *o;
+-            if ( line.startsWith( QLatin1String( "star" ) ) ) {
+-                QStringList fields = line.split( ' ', QString::SkipEmptyParts );
+-                dms ra = dms::fromString( fields[1], false ); //false = hours
+-                dms dc = dms::fromString( fields[2], true );  //true  = degrees
+-                SkyPoint p( ra, dc );
+-                double maxrad = 1000.0/Options::zoomFactor();
+-                o = ks->data()->skyComposite()->starNearest( &p, maxrad );
+-            } else {
+-                o = ks->data()->objectNamed( parts[0] );
+-            }
+-            //If we still haven't identified the object, try interpreting the 
+-            //name as a star's genetive name (with ascii letters)
+-            if ( ! o ) o = ks->data()->skyComposite()->findStarByGenetiveName( parts[0] );
+-            if ( o ) {
+-                slotAddObject( o, true );
+-                //If present, add the Time value into the Hash
+-                if( ! parts[1].isEmpty() ) TimeHash.insert( o->name(), QTime::fromString( parts[1], "hms ap" ) );
+-            }
+-        }
++        QString input;
++        input = istream.readAll();
++        Comast::Log logObject;
++        logObject.readBegin( input );
++        //Set the New TimeHash
++        TimeHash = logObject.timeHash();
++        geo = logObject.geoLocation();
++        dt = logObject.dateTime();
++        foreach( SkyObject *o, *( logObject.targetList() ) )
++            slotAddObject( o, true );
+         //Update the location and user set times from file
+         slotUpdate();
+         //Newly-opened list should not trigger isModified flag
+@@ -899,13 +887,9 @@
+ }
+ 
+ void ObservingList::slotSaveSessionAs() {
+-    bool ok(false);
+-    SessionName = KInputDialog::getText( i18n( "Enter Session Name" ),
+-                                      i18n( "Session name:" ), QString(), &ok );
+-    if ( ok ) {
+-        KUrl fileURL = KFileDialog::getSaveUrl( QDir::homePath(), "*.obslist|KStars Observing List (*.obslist)" );
+-        if ( fileURL.isValid() )
+-            FileName = fileURL.path();
++    KUrl fileURL = KFileDialog::getSaveUrl( QDir::homePath(), "*.obslist|KStars Observing List (*.obslist)" );
++    if ( fileURL.isValid() ) {
++        FileName = fileURL.path();
+         slotSaveSession();
+     }
+ }
+@@ -966,7 +950,7 @@
+ }
+ 
+ void ObservingList::slotSaveSession() {
+-    if ( FileName.isEmpty() || SessionName.isEmpty()  ) {
++    if ( FileName.isEmpty() ) {
+         slotSaveSessionAs();
+         return;
+     }
+@@ -980,27 +964,8 @@
+     return;
+     }
+     QTextStream ostream( &f );
+-    ostream << SessionName << endl;
+-    ostream << geo->name() << "|" <<geo->province() << "|" << geo->country() << "|" << dt.date().toString("ddMMyyyy") << endl;
+-    foreach ( SkyObject* o, sessionList() ) {
+-        if ( o->name() == "star" ) {
+-            ostream << o->name() << "  " << o->ra0()->Hours() << "  " << o->dec0()->Degrees() << endl;
+-        } else {
+-            if ( o->type() == SkyObject::STAR ) {
+-                StarObject *s = (StarObject*)o;
+-
+-                if ( s->name() == s->gname() ) {
+-                    ostream << s->name2() << "|";
+-                } else { 
+-                    ostream << s->name() << "|";
+-                }
+-            } else {
+-                ostream << o->name() << "|";
+-            }
+-            if( TimeHash.value( o->name(), QTime(30,0,0) ).isValid() ) ostream << TimeHash.value( o->name() ).toString( "hms ap" );
+-            ostream<<endl;
+-        }
+-    }
++    Comast::Log log;
++    ostream<< log.writeLog( nativeSave );
+     f.close();
+     isModified = false;//We've saved the session, so reset the modified flag.
+ }
+@@ -1120,6 +1085,7 @@
+     }
+     setSaveImages();
+     ui->WizardButton->setEnabled( ! sessionView );//wizard adds only to the Wish List
++    ui->OALExport->setEnabled( sessionView );
+     //Clear the selection in the Tables
+     ui->TableView->clearSelection();
+     ui->SessionView->clearSelection();
+@@ -1402,4 +1368,46 @@
+     }
+ }
+ 
++void ObservingList::slotOALExport() {
++    nativeSave = false;
++    slotSaveSessionAs();
++    nativeSave = true;
++}
++
++void ObservingList::slotAddVisibleObj() {
++    KStarsDateTime lt = dt;
++    lt.setTime( QTime(8,0,0) );
++    QPointer<WUTDialog> w = new WUTDialog( ks, sessionView, geo, lt );
++    w->init();
++    QModelIndexList selectedItems;
++    selectedItems = m_SortModel->mapSelectionToSource( ui->TableView->selectionModel()->selection() ).indexes();
++    if ( selectedItems.size() )
++        foreach ( const QModelIndex &i, selectedItems ) {
++            foreach ( SkyObject *o, obsList() )
++                if ( o->translatedName() == i.data().toString() && w->checkVisibility( o ) )
++                    slotAddObject( o, true );
++        }
++    delete w;
++}
++
++SkyObject* ObservingList::findObjectByName( QString name ) {
++    foreach( SkyObject* o, sessionList() )
++        if( o->name() == name )
++            return o;
++    return NULL;
++}
++
++void ObservingList::selectObject( SkyObject *o ) {
++    ui->tabWidget->setCurrentIndex( 1 );
++    ui->SessionView->selectionModel()->clear();
++    for ( int irow = m_Session->rowCount()-1; irow >= 0; --irow ) {
++        QModelIndex mSortIndex = m_SortModelSession->index( irow, 0 );
++        QModelIndex mIndex = m_SortModelSession->mapToSource( mSortIndex );
++        int irow = mIndex.row();
++        if(  m_Session->item(irow, 0)->text() == o->translatedName() )
++            ui->SessionView->selectRow( irow );
++        slotNewSelection();
++    }
++}
++
+ #include "observinglist.moc"
+Index: kstars/obslistpopupmenu.cpp
+===================================================================
+--- kstars/obslistpopupmenu.cpp	(revision 1010978)
++++ kstars/obslistpopupmenu.cpp	(revision 1010979)
+@@ -38,6 +38,8 @@
+     //Insert item for adding the object to the session view
+     if( showAddToSession )
+         addAction( i18n( "Add to session plan" ), ks->observingList(), SLOT( slotAddToSession() ) );
++    if( !sessionView )
++        addAction( i18n( "Add objects visible tonight to session plan" ), ks->observingList(), SLOT( slotAddVisibleObj() ) );
+     addSeparator();
+     //Insert item for centering on object
+     if( showCenter )
+Index: kstars/kstarsinit.cpp
+===================================================================
+--- kstars/kstarsinit.cpp	(revision 1010978)
++++ kstars/kstarsinit.cpp	(revision 1010979)
+@@ -47,6 +47,8 @@
+ #include "infoboxes.h"
+ #include "simclock.h"
+ #include "widgets/timestepbox.h"
++#include "comast/equipmentwriter.h"
++#include "comast/observeradd.h"
+ 
+ #include <config-kstars.h>
+ 
+@@ -373,6 +375,22 @@
+     ka->setText( i18n( "Flags...") );
+     connect( ka, SIGNAL( triggered() ), this, SLOT( slotFlagManager() ) );
+ 
++    ka = actionCollection()->addAction( "ewriter" );
++    ka->setText( i18n( "Define Equipment..." ) );
++    ka->setShortcuts( KShortcut( Qt::CTRL+Qt::Key_0 ) );
++    connect( ka, SIGNAL( triggered() ), this, SLOT( slotEquipmentWriter() ) );
++
++    ka = actionCollection()->addAction( "obsadd" );
++    ka->setText( i18n( "Add Observer..." ) );
++    ka->setShortcuts( KShortcut( Qt::CTRL+Qt::Key_1 ) );
++    connect( ka, SIGNAL( triggered() ), this, SLOT( slotObserverAdd() ) );
++
++    //observation menu
++    ka = actionCollection()->addAction( "execute" );
++    ka->setText( i18n( "Execute the session Plan..." ) );
++    ka->setShortcuts( KShortcut( Qt::CTRL+Qt::Key_2 ) );
++    connect( ka, SIGNAL( triggered() ), this, SLOT( slotExecute() ) );
++
+     // devices Menu
+ #ifdef HAVE_INDI_H
+ #ifndef Q_WS_WIN
+@@ -583,6 +601,9 @@
+ 
+     //Initialize Observing List
+     obsList = new ObservingList( this );
++    eWriter = new EquipmentWriter();
++    oAdd = new ObserverAdd;
++    execute = new Execute;
+ 
+     //Do not start the clock if "--paused" specified on the cmd line
+     if ( StartClockRunning )
+Index: kstars/ksalmanac.h
+===================================================================
+--- kstars/ksalmanac.h	(revision 1010978)
++++ kstars/ksalmanac.h	(revision 1010979)
+@@ -42,6 +42,8 @@
+ 
+ // TODO: Fix the documentation for these methods
+ 
++class KStars;
++
+ class KSAlmanac {
+ public:
+     /**
+Index: kstars/skyobjects/skyobject.h
+===================================================================
+--- kstars/skyobjects/skyobject.h	(revision 1010978)
++++ kstars/skyobjects/skyobject.h	(revision 1010979)
+@@ -365,6 +365,10 @@
+      */
+     inline QString &userLog() { return getAuxInfo()->userLog; }
+ 
++    inline QString &notes() { return getAuxInfo()->notes; }
++
++    void setNotes( QString _notes) { getAuxInfo()->notes = _notes; }
++
+     /** @short Return UID for object.  
+      * This method should be reimplemented in all concrete
+      * subclasses. Implementation for SkyObject just returns
+Index: kstars/skyobjects/auxinfo.h
+===================================================================
+--- kstars/skyobjects/auxinfo.h	(revision 1010978)
++++ kstars/skyobjects/auxinfo.h	(revision 1010979)
+@@ -39,6 +39,7 @@
+     QStringList InfoList;
+     QStringList InfoTitle;
+     QString userLog;
++    QString notes;
+ };
+ 
+ #endif
+Index: kstars/kstarsdata.h
+===================================================================
+--- kstars/kstarsdata.h	(revision 1010978)
++++ kstars/kstarsdata.h	(revision 1010979)
+@@ -32,6 +32,8 @@
+ #include "kstarsdatetime.h"
+ #include "simclock.h"
+ #include "skycomponents/skymapcomposite.h"
++#include "comast/comast.h"
++#include "comast/log.h"
+ 
+ //#define MINZOOM 200.
+ #define MINZOOM 250.
+@@ -332,6 +334,8 @@
+     KSNumbers* updateNum()  { return &m_updateNum; }
+     void syncUpdateIDs();
+ 
++    Comast::Log *logObject() { return m_logObject; }
++
+ signals:
+     /**Signal that specifies the text that should be drawn in the KStarsSplash window. */
+     void progressText( const QString& );
+@@ -453,8 +457,8 @@
+     SimClock Clock;
+     KStarsDateTime LTime;
+     ColorScheme CScheme;
++    Comast::Log *m_logObject;
+ 
+-
+     bool TimeRunsForward, temporaryTrail, snapToFocus;
+ 
+     KLocale *locale;
+@@ -485,6 +489,7 @@
+     KSNumbers    m_preUpdateNum, m_updateNum;
+ 
+     static KStarsData* pinstance;
++
+ };
+ 
+ 
+Index: kstars/kstarsdata.cpp
+===================================================================
+--- kstars/kstarsdata.cpp	(revision 1010978)
++++ kstars/kstarsdata.cpp	(revision 1010979)
+@@ -99,6 +99,7 @@
+     locale = new KLocale( "kstars" );
+ 
+     m_SkyComposite = new SkyMapComposite( 0, this );
++    m_logObject = new Comast::Log;
+ 
+     // at startup times run forward
+     setTimeDirection( 0.0 );
+@@ -111,6 +112,7 @@
+ 
+ KStarsData::~KStarsData() {
+     delete locale;
++    delete m_logObject;
+ 
+     qDeleteAll( geoList );
+     qDeleteAll( VariableStarsList );
+Index: kstars/kstarsui-indi.rc
+===================================================================
+--- kstars/kstarsui-indi.rc	(revision 1010978)
++++ kstars/kstarsui-indi.rc	(revision 1010979)
+@@ -98,6 +98,9 @@
+ 		<Action name="colorschemes" /> <!--This is a KMenuAction-->
+ 		<Action name="fovsymbols" /> <!-- This is a KMenuAction-->
+ 		<Separator />
++        <Action name="ewriter"/>
++        <Action name="obsadd"/>
++		<Separator />
+ 		<Action name="geolocation" />
+ 		<Separator />
+ 		<Action name="options_configure_keybinding"/>
+@@ -106,6 +109,10 @@
+ 		<Action name="startwizard" />
+ 	</Menu>
+ 
++	<Menu name="comast" noMerge="1"><text>&amp;Observation</text>
++        <Action name="execute"/>
++    </Menu>
++
+ 	<Menu name="help"><text>&amp;Help</text>
+ 		<Action name="help_contents"/>
+ 		<Action name="help_tipofday"/>
+Index: kstars/kstars.h
+===================================================================
+--- kstars/kstars.h	(revision 1010978)
++++ kstars/kstars.h	(revision 1010979)
+@@ -23,6 +23,9 @@
+ #include <config-kstars.h>
+ 
+ #include "tools/observinglist.h"
++#include "comast/equipmentwriter.h"
++#include "comast/observeradd.h"
++#include "comast/execute.h"
+ 
+ // forward declaration is enough. We only need pointers
+ class QPalette;
+@@ -51,6 +54,9 @@
+ class ImageViewer;
+ class FlagManager;
+ class ObservingList;
++class EquipmentWriter;
++class ObserverAdd;
++class Execute;
+ 
+ class OpsCatalog;
+ class OpsGuides;
+@@ -130,6 +136,8 @@
+ 
+     ObservingList* observingList();
+ 
++    Execute* getExecute();
++
+     ImageViewer* addImageViewer(const KUrl &url, const QString &message );
+     void removeImageViewer( ImageViewer* );
+ 
+@@ -686,6 +694,12 @@
+     /**Save data to config file before exiting.*/
+     void slotAboutToQuit();
+ 
++    void slotEquipmentWriter();
++
++    void slotObserverAdd();
++
++    void slotExecute();
++
+ private:
+     /** Load FOV information and repopulate menu. */
+     void repopulateFOV();
+@@ -717,6 +731,9 @@
+ 
+     //FIXME: move to KStarsData
+     ObservingList *obsList;
++    EquipmentWriter *eWriter;
++    ObserverAdd *oAdd;
++    Execute *execute;
+     AltVsTime *avt;
+     WUTDialog *wut;
+     SkyCalendar *skycal;
+Index: kstars/kstarsui-win.rc
+===================================================================
+--- kstars/kstarsui-win.rc	(revision 1010978)
++++ kstars/kstarsui-win.rc	(revision 1010979)
+@@ -92,12 +92,19 @@
+ 		<Action name="colorschemes" /> <!--This is a KMenuAction-->
+ 		<Action name="fovsymbols" /> <!-- This is a KMenuAction-->
+ 		<Separator />
++        <Action name="ewriter"/>
++        <Action name="obsadd"/>
++		<Separator />
+ 		<Action name="geolocation" />
+ 		<Separator />
+ 		<Action name="configure" />
+ 		<Action name="startwizard" />
+ 	</Menu>
+ 
++	<Menu name="comast" noMerge="1"><text>&amp;Observation</text>
++        <Action name="execute"/>
++    </Menu>
++
+ 	<Menu name="help"><text>&amp;Help</text>
+ 		<Action name="help_contents"/>
+ 		<Action name="help_tipofday"/>
+Index: kstars/kstarsactions.cpp
+===================================================================
+--- kstars/kstarsactions.cpp	(revision 1010978)
++++ kstars/kstarsactions.cpp	(revision 1010979)
+@@ -977,6 +977,18 @@
+     obsList->show();
+ }
+ 
++void KStars::slotEquipmentWriter() {
++    eWriter->show();
++}
++
++void KStars::slotObserverAdd() {
++    oAdd->show();
++}
++
++void KStars::slotExecute() {
++    execute->init();
++    execute->show();
++}
+ //Help Menu
+ void KStars::slotTipOfDay() {
+     KTipDialog::showTip(this, "kstars/tips", true);
+Index: kstars/CMakeLists.txt
+===================================================================
+--- kstars/CMakeLists.txt	(revision 1010978)
++++ kstars/CMakeLists.txt	(revision 1010979)
+@@ -5,6 +5,7 @@
+ add_subdirectory( icons ) 
+ add_subdirectory( satlib ) 
+ add_subdirectory( htmesh ) 
++add_subdirectory( comast ) 
+ 
+ Find_package(ZLIB REQUIRED)
+ 
+@@ -308,9 +309,24 @@
+ 	thumbnailpicker.cpp thumbnaileditor.cpp quaternion.cpp binfilehelper.cpp
+ )
+ 
++set(comast_SRCS
++    comast/log.cpp
++    comast/observer.cpp
++    comast/site.cpp
++    comast/session.cpp
++    comast/scope.cpp
++    comast/eyepiece.cpp
++    comast/filter.cpp
++    comast/observation.cpp
++    comast/lens.cpp
++    comast/equipmentwriter.cpp
++    comast/observeradd.cpp
++    comast/execute.cpp
++)
++
+ set(kstars_SRCS ${indi_SRCS} ${fits_SRCS} 
+ 	${libkstarswidgets_SRCS} ${libkstarscomponents_SRCS} ${libkstarstools_SRCS} ${kstars_extra_SRCS} ${xplanet_SRCS}
+-	${kstars_options_SRCS} ${kstars_skyobjects_SRCS} ${kstars_dialogs_SRCS}
++	${kstars_options_SRCS} ${kstars_skyobjects_SRCS} ${kstars_dialogs_SRCS} ${comast_SRCS}
+ )
+ 
+ qt4_add_dbus_adaptor(kstars_SRCS org.kde.kstars.xml kstars.h KStars)
+@@ -323,7 +339,8 @@
+ 
+ kde4_add_ui_files(kstars_SRCS
+        ${indiui_SRCS} ${fitsui_SRCS} ${xplanetui_SRCS} ${kstars_optionsui_SRCS} ${kstars_dialogsui_SRCS}
+-         thumbnailpicker.ui thumbnaileditor.ui 
++         thumbnailpicker.ui thumbnaileditor.ui comast/observeradd.ui comast/equipmentwriter.ui comast/execute.ui
++
+ )
+ 
+ #kde4_add_app_icon(kstars_SRCS "${KDE4_ICON_DIR}/oxygen/*/apps/kstars.png")
+Index: kstars/comast/equipmentwriter.ui
+===================================================================
+--- kstars/comast/equipmentwriter.ui	(revision 0)
++++ kstars/comast/equipmentwriter.ui	(revision 1010979)
+@@ -0,0 +1,626 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>EquipmentWriter</class>
++ <widget class="QWidget" name="EquipmentWriter">
++  <property name="geometry">
++   <rect>
++    <x>0</x>
++    <y>0</y>
++    <width>411</width>
++    <height>279</height>
++   </rect>
++  </property>
++  <layout class="QVBoxLayout" name="_2">
++   <item>
++    <widget class="QTabWidget" name="tabWidget">
++     <property name="minimumSize">
++      <size>
++       <width>252</width>
++       <height>0</height>
++      </size>
++     </property>
++     <property name="currentIndex">
++      <number>0</number>
++     </property>
++     <property name="documentMode">
++      <bool>false</bool>
++     </property>
++     <widget class="QWidget" name="Scope">
++      <attribute name="title">
++       <string>Scope</string>
++      </attribute>
++      <layout class="QHBoxLayout" name="_3">
++       <item>
++        <widget class="KListWidget" name="ScopeList"/>
++       </item>
++       <item>
++        <layout class="QVBoxLayout" name="verticalLayout">
++         <item>
++          <layout class="QFormLayout" name="formLayout">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label">
++             <property name="text">
++              <string>Id:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="KLineEdit" name="Id">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label_2">
++             <property name="text">
++              <string>Model:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KLineEdit" name="Model"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label_3">
++             <property name="text">
++              <string>Vendor:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KLineEdit" name="Vendor"/>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label_4">
++             <property name="text">
++              <string>Type:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="4" column="0">
++            <widget class="QLabel" name="label_13">
++             <property name="text">
++              <string>Aperture:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="5" column="0">
++            <widget class="QLabel" name="label_5">
++             <property name="text">
++              <string>Focal Length:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="5" column="1">
++            <layout class="QHBoxLayout" name="horizontalLayout_4">
++             <item>
++              <widget class="KDoubleNumInput" name="FocalLength"/>
++             </item>
++             <item>
++              <widget class="QLabel" name="label_14">
++               <property name="text">
++                <string>mm</string>
++               </property>
++              </widget>
++             </item>
++            </layout>
++           </item>
++           <item row="4" column="1">
++            <layout class="QHBoxLayout" name="horizontalLayout_5">
++             <item>
++              <widget class="KDoubleNumInput" name="Aperture"/>
++             </item>
++             <item>
++              <widget class="QLabel" name="label_15">
++               <property name="text">
++                <string>mm</string>
++               </property>
++              </widget>
++             </item>
++            </layout>
++           </item>
++           <item row="3" column="1">
++            <widget class="KComboBox" name="Type">
++             <item>
++              <property name="text">
++               <string>Refractor</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Newtonian</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Maksutov</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Schmidt-Cassegrain</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Kutter (Schiefspiegler)</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>Cassegrain</string>
++              </property>
++             </item>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout">
++           <item>
++            <spacer name="horizontalSpacer">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++           <item>
++            <widget class="QPushButton" name="NewScope">
++             <property name="text">
++              <string>Add New..</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="AddScope">
++             <property name="text">
++              <string>Save Scope</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="RemoveScope">
++             <property name="text">
++              <string>Remove</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </item>
++      </layout>
++     </widget>
++     <widget class="QWidget" name="Eyepiece">
++      <attribute name="title">
++       <string>Eyepiece</string>
++      </attribute>
++      <layout class="QHBoxLayout">
++       <item>
++        <widget class="KListWidget" name="EyepieceList"/>
++       </item>
++       <item>
++        <layout class="QVBoxLayout" name="verticalLayout_2">
++         <item>
++          <layout class="QFormLayout" name="formLayout_2">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label_6">
++             <property name="text">
++              <string>Id:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="KLineEdit" name="e_Id">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label_7">
++             <property name="text">
++              <string>Model:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KLineEdit" name="e_Model"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label_8">
++             <property name="text">
++              <string>Vendor:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KLineEdit" name="e_Vendor"/>
++           </item>
++           <item row="3" column="1">
++            <layout class="QHBoxLayout" name="horizontalLayout_6">
++             <item>
++              <widget class="KDoubleNumInput" name="e_focalLength"/>
++             </item>
++             <item>
++              <widget class="QLabel" name="label_17">
++               <property name="text">
++                <string>mm</string>
++               </property>
++              </widget>
++             </item>
++            </layout>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label_10">
++             <property name="text">
++              <string>Focal Length:</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_3">
++           <item>
++            <widget class="QLabel" name="label_9">
++             <property name="text">
++              <string>Apparent FOV:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KDoubleNumInput" name="Fov"/>
++           </item>
++           <item>
++            <widget class="QLabel" name="label_11">
++             <property name="text">
++              <string>Unit:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KComboBox" name="FovUnit">
++             <item>
++              <property name="text">
++               <string>deg</string>
++              </property>
++             </item>
++             <item>
++              <property name="text">
++               <string>rad</string>
++              </property>
++             </item>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <spacer name="verticalSpacer">
++           <property name="orientation">
++            <enum>Qt::Vertical</enum>
++           </property>
++           <property name="sizeHint" stdset="0">
++            <size>
++             <width>0</width>
++             <height>0</height>
++            </size>
++           </property>
++          </spacer>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_2">
++           <item>
++            <spacer name="horizontalSpacer_2">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>0</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++           <item>
++            <widget class="QPushButton" name="NewEyepiece">
++             <property name="text">
++              <string>Add New</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="AddEyepiece">
++             <property name="text">
++              <string>Save Eyepiece</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="RemoveEyepiece">
++             <property name="text">
++              <string>Remove</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </item>
++      </layout>
++     </widget>
++     <widget class="QWidget" name="Lens">
++      <attribute name="title">
++       <string>Lens</string>
++      </attribute>
++      <layout class="QHBoxLayout" name="_4">
++       <item>
++        <widget class="KListWidget" name="LensList"/>
++       </item>
++       <item>
++        <layout class="QVBoxLayout" name="verticalLayout3">
++         <item>
++          <widget class="QLabel" name="label_16">
++           <property name="sizePolicy">
++            <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
++             <horstretch>0</horstretch>
++             <verstretch>0</verstretch>
++            </sizepolicy>
++           </property>
++           <property name="text">
++            <string>Enter details of Barlow/Shapley lenses</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <layout class="QFormLayout" name="formLayout3">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label3">
++             <property name="text">
++              <string>Id:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="KLineEdit" name="l_Id">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label2">
++             <property name="text">
++              <string>Model:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KLineEdit" name="l_Model"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label3">
++             <property name="text">
++              <string>Vendor:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KLineEdit" name="l_Vendor"/>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label5">
++             <property name="toolTip">
++              <string>Magnification factor of the Barlow/Shapley lens</string>
++             </property>
++             <property name="text">
++              <string>Factor:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="3" column="1">
++            <widget class="KDoubleNumInput" name="l_Factor"/>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout3">
++           <item>
++            <spacer name="horizontalSpacer3">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++           <item>
++            <widget class="QPushButton" name="NewLens">
++             <property name="text">
++              <string>Add New..</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="AddLens">
++             <property name="text">
++              <string>Save Lens</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="RemoveLens">
++             <property name="text">
++              <string>Remove</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </item>
++      </layout>
++     </widget>
++     <widget class="QWidget" name="Filter">
++      <attribute name="title">
++       <string>Filter</string>
++      </attribute>
++      <layout class="QHBoxLayout" name="_5">
++       <item>
++        <widget class="KListWidget" name="FilterList"/>
++       </item>
++       <item>
++        <layout class="QVBoxLayout" name="verticalLayout4">
++         <item>
++          <layout class="QFormLayout" name="formLayout4">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label4">
++             <property name="text">
++              <string>Id:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="KLineEdit" name="f_Id">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label3">
++             <property name="text">
++              <string>Model:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KLineEdit" name="f_Model"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label5">
++             <property name="text">
++              <string>Vendor:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KLineEdit" name="f_Vendor"/>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label6">
++             <property name="text">
++              <string>Type:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="3" column="1">
++            <widget class="KLineEdit" name="f_Type"/>
++           </item>
++           <item row="4" column="0">
++            <widget class="QLabel" name="label_12">
++             <property name="text">
++              <string>Color:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="4" column="1">
++            <widget class="KLineEdit" name="f_Color"/>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout7">
++           <item>
++            <spacer name="horizontalSpacer3">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++           <item>
++            <widget class="QPushButton" name="NewFilter">
++             <property name="text">
++              <string>Add New..</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="AddFilter">
++             <property name="text">
++              <string>Save Filter</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QPushButton" name="RemoveFilter">
++             <property name="text">
++              <string>Remove</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </item>
++      </layout>
++     </widget>
++    </widget>
++   </item>
++  </layout>
++ </widget>
++ <customwidgets>
++  <customwidget>
++   <class>KListWidget</class>
++   <extends>QListWidget</extends>
++   <header>klistwidget.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KDoubleNumInput</class>
++   <extends>QWidget</extends>
++   <header>knuminput.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KLineEdit</class>
++   <extends>QLineEdit</extends>
++   <header>klineedit.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KComboBox</class>
++   <extends>QComboBox</extends>
++   <header>kcombobox.h</header>
++  </customwidget>
++ </customwidgets>
++ <resources/>
++ <connections/>
++</ui>
+Index: kstars/comast/observation.h
+===================================================================
+--- kstars/comast/observation.h	(revision 0)
++++ kstars/comast/observation.h	(revision 1010979)
+@@ -0,0 +1,62 @@
++/***************************************************************************
++                          observation.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef OBSERVATION_H_
++#define OBSERVATION_H_
++
++#include "comast/comast.h"
++#include "kstarsdatetime.h"
++
++#include <QString>
++
++class Comast::Observation {
++    public:
++        Observation( QString id, QString observer, QString site, QString session, QString target, KStarsDateTime begin, double faintestStar, double seeing, QString scope, QString eyepiece, QString lens, QString filter,  QString result, QString lang ) {
++            setObservation( id, observer, site, session, target, begin, faintestStar, seeing, scope, eyepiece, lens, filter, result, lang );
++        }
++        QString id() { return m_Name; }
++        QString target() { return m_Target; }
++        QString observer() { return m_Observer; }
++        QString site() { return m_Site; }
++        QString session() { return m_Session; }
++        QString scope() { return m_Scope; }
++        QString eyepiece() { return m_Eyepiece; }
++        QString lens() { return m_Lens; }
++        QString filter() { return m_Filter; }
++        QString lang() { return m_Lang; }
++        QString result() { return m_Result; }
++        double seeing() { return m_Seeing; }
++        double faintestStar() { return m_FaintestStar; }
++        KStarsDateTime begin() { return m_Begin; }
++        void setObservation( QString _id, QString _observer, QString _site, QString _session, QString _target, KStarsDateTime _begin, double _faintestStar, double _seeing, QString _scope, QString _eyepiece, QString _lens, QString _filter, QString _result, QString _lang =  "en" );
++    private:
++        QString m_Name; 
++        QString m_Target;
++        QString m_Observer;
++        QString m_Site;
++        QString m_Session;
++        QString m_Scope;
++        QString m_Result;
++        QString m_Eyepiece;
++        QString m_Lens;
++        QString m_Filter;
++        QString m_Lang;
++        double m_Seeing;
++        double m_FaintestStar;
++        KStarsDateTime m_Begin;
++};
++#endif
+Index: kstars/comast/observeradd.cpp
+===================================================================
+--- kstars/comast/observeradd.cpp	(revision 0)
++++ kstars/comast/observeradd.cpp	(revision 1010979)
+@@ -0,0 +1,98 @@
++/***************************************************************************
++                          observeradd.cpp  -  description
++
++                             -------------------
++    begin                : Sunday July 26, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/observeradd.h"
++#include "ui_observeradd.h"
++
++#include <QFile>
++
++#include <kmessagebox.h>
++#include <kstandarddirs.h>
++
++#include "comast/observer.h"
++
++ObserverAdd::ObserverAdd() {
++    // Setting up the widget from the .ui file and adding it to the KDialog
++    QWidget *widget = new QWidget;
++    ui.setupUi( widget );
++    setMainWidget( widget );
++    setCaption( i18n( "Add Observer" ) );
++    setButtons( KDialog::Close );
++    ks = KStars::Instance();
++    nextObserver = 0;
++
++    // Load the observers list from the file
++    loadObservers();
++
++    // Make connections
++    connect( ui.AddObserver, SIGNAL( clicked() ), this, SLOT( slotAddObserver() ) );
++}
++
++void ObserverAdd::slotAddObserver() {
++    if( ui.Name->text().isEmpty() ) {
++        KMessageBox::sorry( 0, i18n("The Name field cannot be empty"), i18n("Invalid Input") );
++        return;
++    }
++    Comast::Observer *o = ks->data()->logObject()->findObserverByName( ui.Name->text() + " " + ui.Surname->text() ); //The findObserverByName uses the fullName for searching
++    if( o ) {
++        if( Comast::warningOverwrite( i18n( "Another Observer already exists with the given Name and Surname, Overwrite?" ) ) == KMessageBox::Yes ) {
++            o->setObserver( o->id(), o->name(), o->surname(), ui.Contact->text() );
++        } else
++            return; //Do nothing
++    } else { // No such observer exists, so create a new observer object and append to file
++        while( ks->data()->logObject()->findObserverById( i18n("observer_") + QString::number( nextObserver ) ) )
++            nextObserver++;
++        o = new Comast::Observer( i18n("observer_") + QString::number( nextObserver++ ), ui.Name->text(), ui.Surname->text(), ui.Contact->text() );
++        ks->data()->logObject()->observerList()->append( o );
++    }
++ 
++    // Save the new observer list
++    saveObservers();
++
++    // Reset the UI for a fresh addition
++    ui.Name->clear();
++    ui.Surname->clear();
++    ui.Contact->clear();
++}
++
++void ObserverAdd::saveObservers() {
++    QFile f;
++    f.setFileName( KStandardDirs::locateLocal( "appdata", "observerlist.xml" ) );
++    if ( ! f.open( QIODevice::WriteOnly ) ) {
++        KMessageBox::sorry( 0, i18n( "Could not save the observer list to the file" ), i18n( "Write Error!" ) );
++        return;
++    }
++    QTextStream ostream( &f );
++    ks->data()->logObject()->writeBegin(); //Initialize the xml document, etc.
++    ks->data()->logObject()->writeObservers();//Write the observer list into the QString
++    ks->data()->logObject()->writeEnd();//End the write process
++    ostream << ks->data()->logObject()->writtenOutput();
++    f.close();
++}
++
++void ObserverAdd::loadObservers() {
++    QFile f;
++    f.setFileName( KStandardDirs::locateLocal( "appdata", "observerlist.xml" ) );   
++    if( ! f.open( QIODevice::ReadOnly ) )
++        return;
++    QTextStream istream( &f );
++    ks->data()->logObject()->readBegin( istream.readAll() );
++    f.close();
++}
++
++#include "observeradd.moc"
+Index: kstars/comast/lens.cpp
+===================================================================
+--- kstars/comast/lens.cpp	(revision 0)
++++ kstars/comast/lens.cpp	(revision 1010979)
+@@ -0,0 +1,30 @@
++/***************************************************************************
++                          lens.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/lens.h"
++
++void Comast::Lens::setLens( QString _id, QString _model, QString _vendor, double _factor ){
++    m_Id = _id;
++    m_Model = _model;
++    m_Vendor = _vendor;
++    m_Factor = _factor;
++    if( _factor > 1 )
++        m_Name = _vendor + " " + _model + " - " + QString::number( _factor ) + "x Barlow (" + _id + ")"; 
++    else
++        m_Name = _vendor + " " + _model + " - " + QString::number( _factor ) + "x Focal Reducer (" + _id + ")"; 
++}
+Index: kstars/comast/execute.cpp
+===================================================================
+--- kstars/comast/execute.cpp	(revision 0)
++++ kstars/comast/execute.cpp	(revision 1010979)
+@@ -0,0 +1,363 @@
++/***************************************************************************
++                          execute.cpp  -  description
++
++                             -------------------
++    begin                : Friday July 21, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/execute.h"
++
++#include <QFile>
++
++#include <kmessagebox.h>
++#include <kfiledialog.h>
++#include "comast/observer.h"
++#include "comast/site.h"
++#include "comast/session.h"
++#include "comast/scope.h"
++#include "comast/eyepiece.h"
++#include "comast/lens.h"
++#include "comast/filter.h"
++#include "skyobjects/skyobject.h"
++#include "dialogs/locationdialog.h"
++#include "dialogs/finddialog.h"
++
++Execute::Execute() {
++    QWidget *w = new QWidget;
++    ui.setupUi( w );
++    setMainWidget( w );
++    setCaption( i18n( "Execute Session" ) );
++    setButtons( KDialog::User1|KDialog::Close );
++    setButtonGuiItem( KDialog::User1, KGuiItem( i18n("End Session"), QString(), i18n("Save and End the current session") ) );
++    ks = KStars::Instance();
++    currentTarget = NULL;
++    currentObserver = NULL;
++    currentScope = NULL;
++    currentEyepiece = NULL;
++    currentLens = NULL;
++    currentFilter = NULL;
++    currentSession = NULL;
++    nextSession = 0;
++    nextObservation = 0;
++    nextSite = 0;
++
++    //initialize the global logObject
++    logObject = ks->data()->logObject();
++
++    //initialize the lists and parameters
++    init();
++    ui.Target->hide();
++    ui.AddObject->hide();
++    ui.NextButton->hide();
++    ui.NextButton->setEnabled( false );
++    ui.Slew->setEnabled( false );
++
++    //make connections
++    connect( this, SIGNAL( user1Clicked() ), 
++             this, SLOT( slotEndSession() ) );
++    connect( ui.NextButton, SIGNAL( clicked() ),
++             this, SLOT( slotNext() ) );
++    connect( ui.Slew, SIGNAL( clicked() ),
++             this, SLOT( slotSlew() ) );
++    connect( ui.Location, SIGNAL( clicked() ),
++             this, SLOT( slotLocation() ) );
++    connect( ui.Target, SIGNAL( currentTextChanged(const QString) ),
++             this, SLOT( slotSetTarget(QString) ) );
++    connect( ui.SessionURL, SIGNAL( leftClickedUrl() ),
++             this, SLOT( slotShowSession() ) );
++    connect( ui.ObservationsURL, SIGNAL( leftClickedUrl() ),
++             this, SLOT( slotShowTargets() ) );
++    connect( ui.AddObject, SIGNAL( leftClickedUrl() ),
++             this, SLOT( slotAddObject() ) );
++}
++
++void Execute::init() {
++    //intialize geo to current location of the ObservingList
++    geo = ks->observingList()->geoLocation();
++    ui.Location->setText( geo->fullName() );
++
++    //set the date time to the dateTime from the OL
++    ui.Begin->setDateTime( ks->observingList()->dateTime().dateTime() );
++
++    //load Targets
++    loadTargets();
++
++    //load Equipment
++    loadEquipment();
++
++    //load Observers
++    loadObservers();
++
++    //set Current Items
++    loadCurrentItems();
++}
++void Execute::loadCurrentItems() {
++    //Set the current target, equipments and observer
++    if( currentTarget )
++        ui.Target->setCurrentRow( findIndexOfTarget( currentTarget->name() ), QItemSelectionModel::SelectCurrent );
++    else
++        ui.Target->setCurrentRow( 0, QItemSelectionModel::SelectCurrent );
++        
++    if( currentObserver )
++        ui.Observer->setCurrentIndex( ui.Observer->findText( currentObserver->name() + " " + currentObserver->surname() ) );
++    if( currentScope )
++        ui.Scope->setCurrentIndex( ui.Scope->findText( currentScope->name()) );
++    if( currentEyepiece )
++        ui.Eyepiece->setCurrentIndex( ui.Eyepiece->findText( currentEyepiece->name()) );
++    if( currentLens )
++        ui.Lens->setCurrentIndex( ui.Lens->findText( currentLens->name()) );
++    if( currentFilter )
++        ui.Filter->setCurrentIndex( ui.Filter->findText( currentFilter->name()) );
++}
++
++int Execute::findIndexOfTarget( QString name ) {
++    for( int i = 0; i < ui.Target->count(); i++ )
++        if( ui.Target->item( i )->text() == name )
++            return i;
++    return -1;
++}
++
++void Execute::slotNext() {
++    switch( ui.stackedWidget->currentIndex() ) {
++        case 0: {
++            saveSession();
++            break;
++        }
++        case 1: {
++            addTargetNotes();
++            break;
++        }
++        case 2: {
++                addObservation();
++                ui.stackedWidget->setCurrentIndex( 1 );
++                ui.NextButton->setText( i18n( "Next Page >" ) );
++                QString prevTarget = currentTarget->name();
++                loadTargets();
++                ui.Target->setCurrentRow( findIndexOfTarget( prevTarget ), QItemSelectionModel::SelectCurrent );
++                selectNextTarget();
++            break;
++        }
++    }
++}
++
++bool Execute::saveSession() {
++    Comast::Site *site = logObject->findSiteByName( geo->fullName() ); 
++    if( ! site ) {
++        while( logObject->findSiteById( i18n( "site_" ) + QString::number( nextSite ) ) )
++            nextSite++;
++        site = new Comast::Site( geo, i18n( "site_" ) + QString::number( nextSite++ ) );
++        logObject->siteList()->append( site );
++    }
++    if( currentSession ){
++            currentSession->setSession( currentSession->id(), site->id(), ui.Begin->dateTime(), ui.Begin->dateTime(), ui.Weather->toPlainText(), ui.Equipment->toPlainText(), ui.Comment->toPlainText(), ui.Language->text() );
++    } else {
++        while( logObject->findSessionByName( i18n( "session_" ) + QString::number( nextSession ) ) )
++            nextSession++;
++        currentSession = new Comast::Session( i18n( "session_" ) + QString::number( nextSession++ ) , site->id(), ui.Begin->dateTime(), ui.Begin->dateTime(), ui.Weather->toPlainText(), ui.Equipment->toPlainText(), ui.Comment->toPlainText(), ui.Language->text() );
++        logObject->sessionList()->append( currentSession );
++    } 
++    ui.stackedWidget->setCurrentIndex( 1 ); //Move to the next page
++    return true;
++}
++
++void Execute::slotLocation() {
++    QPointer<LocationDialog> ld = new LocationDialog( ks );
++    if ( ld->exec() == QDialog::Accepted ) {
++        geo = ld->selectedCity();
++        ui.Location->setText( geo -> fullName() );
++    }
++    delete ld;
++}
++
++void Execute::loadTargets() {
++    ui.Target->clear();
++    sortTargetList();
++    foreach( SkyObject *o, ks->observingList()->sessionList() ) {
++        ui.Target->addItem( o->name() );
++    }
++}
++
++void Execute::loadEquipment() {
++    ui.Scope->clear();
++    ui.Eyepiece->clear();
++    ui.Lens->clear();
++    ui.Filter->clear();
++    foreach( Comast::Scope *s, *( logObject->scopeList() ) )
++        ui.Scope->addItem( s->name() );
++    foreach( Comast::Eyepiece *e, *( logObject->eyepieceList() ) )
++        ui.Eyepiece->addItem( e->name() );
++    foreach( Comast::Lens *l, *( logObject->lensList() ) )
++        ui.Lens->addItem( l->name() );
++    foreach( Comast::Filter *f, *( logObject->filterList() ) )
++        ui.Filter->addItem( f->name() );
++}
++
++void Execute::loadObservers() {
++    ui.Observer->clear();
++    foreach( Comast::Observer *o,*( logObject->observerList() ) )
++        ui.Observer->addItem( o->name() + " " + o->surname() );
++}
++
++void Execute::sortTargetList() {
++    qSort( ks->observingList()->sessionList().begin(), ks->observingList()->sessionList().end(), Execute::timeLessThan );
++}
++
++ bool Execute::timeLessThan ( SkyObject *o1, SkyObject *o2 ) {
++    QTime t1 = KStars::Instance()->observingList()->scheduledTime( o1 ), t2 = KStars::Instance()->observingList()->scheduledTime( o2 );
++    if( t1 < QTime(12,0,0) )
++        t1.setHMS( t1.hour()+12, t1.minute(), t1.second() );
++    else
++        t1.setHMS( t1.hour()-12, t1.minute(), t1.second() );
++    if( t2 < QTime(12,0,0) )
++        t2.setHMS( t2.hour()+12, t2.minute(), t2.second() );
++    else
++        t2.setHMS( t2.hour()-12, t2.minute(), t2.second() );
++    return ( t1 < t2 ) ;
++}
++
++void Execute::addTargetNotes() {
++    if( ! ui.Target->count() )
++        return;
++    SkyObject *o = KStars::Instance()->observingList()->findObjectByName( ui.Target->currentItem()->text() );
++    if( o ) {
++        currentTarget = o;
++        o->setNotes( ui.Notes->toPlainText() );
++        ui.Notes->clear();
++        loadObservationTab();
++    }
++}
++
++void Execute::loadObservationTab() {
++   ui.Time->setTime( KStarsDateTime::currentDateTime().time() );
++   ui.stackedWidget->setCurrentIndex( 2 );
++   ui.NextButton->setText( i18n( "Next Target >" ) );
++}
++
++bool Execute::addObservation() {
++    slotSetCurrentObjects();
++    while( logObject->findObservationByName( i18n( "observation_" ) + QString::number( nextObservation ) ) )
++        nextObservation++;
++    KStarsDateTime dt = currentSession->begin();
++    dt.setTime( ui.Time->time() );
++    QString observer = "";
++    if( currentObserver )
++        observer = currentObserver->id();
++    Comast::Observation *o = new Comast::Observation( i18n( "observation_" ) + QString::number( nextObservation++ ) , observer, currentSession->site(), currentSession->id(), currentTarget->name(), dt, ui.FaintestStar->value(), ui.Seeing->value(), currentScope->id(), currentEyepiece->id(), currentLens->id(), currentFilter->id(), ui.Description->toPlainText(), ui.Language->text() );
++        logObject->observationList()->append( o );
++    ui.Description->clear();
++    return true;
++}
++void Execute::slotEndSession() {
++    if( currentSession ) {
++        currentSession->setSession( currentSession->id(), currentSession->site(), ui.Begin->dateTime(), KStarsDateTime::currentDateTime(), ui.Weather->toPlainText(), ui.Equipment->toPlainText(), ui.Comment->toPlainText(), ui.Language->text() );
++        KUrl fileURL = KFileDialog::getSaveUrl( QDir::homePath(), "*.xml" );
++        if( fileURL.isValid() ) {
++            QFile f( fileURL.path() );
++            if( ! f.open( QIODevice::WriteOnly ) ) {
++                QString message = i18n( "Could not open file %1", f.fileName() );
++                KMessageBox::sorry( 0, message, i18n( "Could Not Open File" ) );
++                return;
++            }
++            QTextStream ostream( &f );
++            ostream<< logObject->writeLog( false );
++            f.close();
++        }
++    }
++        hide();
++        ui.stackedWidget->setCurrentIndex(0);
++        logObject->observationList()->clear();
++        logObject->sessionList()->clear();
++        delete currentSession;
++        currentTarget = NULL;
++        currentSession = NULL;
++}
++
++void Execute::slotSetTarget( QString name ) { 
++    currentTarget = ks->observingList()->findObjectByName( name );
++    if( ! currentTarget ) {
++        ui.NextButton->setEnabled( false );
++        ui.Slew->setEnabled( false );
++        return;
++    } else {
++        ui.NextButton->setEnabled( true );
++        ui.Slew->setEnabled( true );
++        ks->observingList()->selectObject( currentTarget );
++        ks->observingList()->slotCenterObject();
++        QString smag = "--";
++        if (  - 30.0 < currentTarget->mag() && currentTarget->mag() < 90.0 ) smag = QString::number( currentTarget->mag(), 'g', 2 ); // The lower limit to avoid display of unrealistic comet magnitudes
++        ui.Mag->setText( smag );
++        ui.Type->setText( currentTarget->typeName() );
++        ui.SchTime->setText( ks->observingList()->scheduledTime(currentTarget).toString( "h:mm:ss AP" ) ) ;
++        SkyPoint p = currentTarget->recomputeCoords( KStarsDateTime::currentDateTime() , geo );
++        dms lst(geo->GSTtoLST( KStarsDateTime::currentDateTime().gst() ));
++        p.EquatorialToHorizontal( &lst, geo->lat() );
++        ui.RA->setText( p.ra()->toHMSString() ) ;
++        ui.Dec->setText( p.dec()->toDMSString() );
++        ui.Alt->setText( p.alt()->toDMSString() );
++        ui.Az->setText( p.az()->toDMSString() );
++        ui.Notes->setText( currentTarget->notes() );
++    }
++}
++
++void Execute::slotSlew() {
++    ks->observingList()->slotSlewToObject();
++}
++
++void Execute::selectNextTarget() {
++    int i = findIndexOfTarget( currentTarget->name() ) + 1; 
++    if( i < ui.Target->count() ) {
++        ui.Target->selectionModel()->clear();
++        ui.Target->setCurrentRow( i, QItemSelectionModel::SelectCurrent );
++    }
++}
++
++void Execute::slotSetCurrentObjects() {
++    currentScope = logObject->findScopeByName( ui.Scope->currentText() );
++    currentEyepiece = logObject->findEyepieceByName( ui.Eyepiece->currentText() );
++    currentLens = logObject->findLensByName( ui.Lens->currentText() );
++    currentFilter = logObject->findFilterByName( ui.Filter->currentText() );
++    currentObserver = logObject->findObserverByName( ui.Observer->currentText() );
++}
++
++void Execute::slotShowSession() {
++    ui.Target->hide();
++    ui.stackedWidget->setCurrentIndex( 0 );
++    ui.NextButton->hide();
++    ui.AddObject->hide();
++}
++
++void Execute::slotShowTargets() {
++    if( saveSession() ) {
++        ui.Target->show();
++        ui.AddObject->show();
++        ui.stackedWidget->setCurrentIndex( 1 );
++        ui.NextButton->show();
++        ui.NextButton->setText( i18n( "Next Page >" ) );
++    }
++}
++
++void Execute::slotAddObject() {
++   QPointer<FindDialog> fd = new FindDialog( ks );    
++   if ( fd->exec() == QDialog::Accepted ) {
++       SkyObject *o = fd->selectedObject();
++       if( o != 0 ) {
++           ks->observingList()->slotAddObject( o, true );  
++           init();
++       }
++   }
++   delete fd;
++}
++
++
++#include "execute.moc"
+Index: kstars/comast/equipmentwriter.cpp
+===================================================================
+--- kstars/comast/equipmentwriter.cpp	(revision 0)
++++ kstars/comast/equipmentwriter.cpp	(revision 1010979)
+@@ -0,0 +1,376 @@
++/***************************************************************************
++                          equipmentwriter.cpp  -  description
++
++                             -------------------
++    begin                : Friday July 19, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/equipmentwriter.h"
++#include "ui_equipmentwriter.h"
++
++#include <QFile>
++
++#include <kstandarddirs.h>
++
++#include "comast/comast.h"
++#include "comast/scope.h"
++#include "comast/eyepiece.h"
++#include "comast/lens.h"
++#include "comast/filter.h"
++
++EquipmentWriter::EquipmentWriter() {
++    QWidget *widget = new QWidget;
++    ui.setupUi( widget );
++    setMainWidget( widget );
++    setCaption( i18n( "Equipment Writer" ) );
++    setButtons( KDialog::Close );
++    ks = KStars::Instance();
++    nextScope = 0;
++    nextEyepiece = 0;
++    nextFilter = 0;
++    nextLens = 0;
++    loadEquipment();
++    newScope = true;
++    newEyepiece = true;
++    newLens = true;
++    newFilter = true;
++
++    //make connections
++    connect( this, SIGNAL( closeClicked() ), this, SLOT( slotClose() ) );
++    connect( ui.NewScope, SIGNAL( clicked() ), this, SLOT( slotNewScope() ) );
++    connect( ui.NewEyepiece, SIGNAL( clicked() ), this, SLOT( slotNewEyepiece() ) );
++    connect( ui.NewLens, SIGNAL( clicked() ), this, SLOT( slotNewLens() ) );
++    connect( ui.NewFilter, SIGNAL( clicked() ), this, SLOT( slotNewFilter() ) );
++    connect( ui.AddScope, SIGNAL( clicked() ), this, SLOT( slotSave() ) );
++    connect( ui.AddEyepiece, SIGNAL( clicked() ), this, SLOT( slotSave() ) );
++    connect( ui.AddLens, SIGNAL( clicked() ), this, SLOT( slotSave() ) );
++    connect( ui.AddFilter, SIGNAL( clicked() ), this, SLOT( slotSave() ) );
++    connect( ui.ScopeList, SIGNAL( currentTextChanged(const QString) ),
++             this, SLOT( slotSetScope(QString) ) );
++    connect( ui.EyepieceList, SIGNAL( currentTextChanged(const QString) ),
++             this, SLOT( slotSetEyepiece(QString) ) );
++    connect( ui.LensList, SIGNAL( currentTextChanged(const QString) ),
++             this, SLOT( slotSetLens(QString) ) );
++    connect( ui.FilterList, SIGNAL( currentTextChanged(const QString) ),
++             this, SLOT( slotSetFilter(QString) ) );
++    connect( ui.RemoveScope, SIGNAL( clicked() ), this, SLOT( slotRemoveScope() ) );
++    connect( ui.RemoveEyepiece, SIGNAL( clicked() ), this, SLOT( slotRemoveEyepiece() ) );
++    connect( ui.RemoveLens, SIGNAL( clicked() ), this, SLOT( slotRemoveLens() ) );
++    connect( ui.RemoveFilter, SIGNAL( clicked() ), this, SLOT( slotRemoveFilter() ) );
++}
++
++void EquipmentWriter::slotAddScope() {
++    while ( ks->data()->logObject()->findScopeById( i18n("scope_") + QString::number( nextScope ) ) )
++    nextScope++;
++    Comast::Scope *s = new Comast::Scope( i18n( "scope_" ) + QString::number( nextScope++ ), ui.Model->text(), ui.Vendor->text(), ui.Type->currentText(), ui.FocalLength->value(), ui.Aperture->value() ); 
++    ks->data()->logObject()->scopeList()->append( s );
++    saveEquipment(); //Save the new list.
++    ui.Model->clear();
++    ui.Vendor->clear();
++    ui.FocalLength->setValue(0);
++}
++
++void EquipmentWriter::slotRemoveScope() {
++    Comast::Scope *s = ks->data()->logObject()->findScopeByName( ui.Id->text() );
++    ks->data()->logObject()->scopeList()->removeAll( s );
++    saveEquipment(); //Save the new list.
++    ui.Model->clear();
++    ui.Vendor->clear();
++    ui.FocalLength->setValue(0);
++    ui.ScopeList->clear();
++    foreach( Comast::Scope *s, *( ks->data()->logObject()->scopeList() ) )
++        ui.ScopeList->addItem( s->name() );
++}
++
++void EquipmentWriter::slotSaveScope() {
++    Comast::Scope *s = ks->data()->logObject()->findScopeByName( ui.Id->text() );
++    if( s ) {
++        s->setScope( ui.Id->text(), ui.Model->text(), ui.Vendor->text(), ui.Type->currentText(), ui.FocalLength->value(), ui.Aperture->value() );
++    }
++    saveEquipment(); //Save the new list.
++}
++ 
++void EquipmentWriter::slotSetScope( QString name) {
++    Comast::Scope *s = ks->data()->logObject()->findScopeByName( name );
++    if ( s ) {
++        ui.Id->setText( s->id() ) ;
++        ui.Model->setText( s->model() );
++        ui.Vendor->setText( s->vendor() );
++        ui.Type->setCurrentIndex( ui.Type->findText( s->type() ) );
++        ui.FocalLength->setValue( s->focalLength() );
++        newScope = false;
++    }
++}
++void EquipmentWriter::slotNewScope() {
++    ui.Id->clear();
++    ui.Model->clear();
++    ui.Vendor->clear();
++    ui.FocalLength->setValue(0);
++    ui.ScopeList->selectionModel()->clear();
++    newScope = true;
++}
++
++void EquipmentWriter::slotAddEyepiece() {
++    while ( ks->data()->logObject()->findEyepieceById( i18n("eyepiece_") + QString::number( nextEyepiece ) ) )
++    nextEyepiece++;
++    Comast::Eyepiece *e = new Comast::Eyepiece( i18n("eyepiece_") + QString::number( nextEyepiece++ ), ui.e_Model->text(), ui.e_Vendor->text(), ui.Fov->value(), ui.FovUnit->currentText(), ui.e_focalLength->value() );
++    ks->data()->logObject()->eyepieceList()->append( e );
++    saveEquipment(); //Save the new list.
++    ui.e_Id->clear();
++    ui.e_Model->clear();
++    ui.e_Vendor->clear();
++    ui.Fov->setValue(0);
++    ui.e_focalLength->setValue(0);
++}
++
++void EquipmentWriter::slotRemoveEyepiece() {
++    Comast::Eyepiece *e = ks->data()->logObject()->findEyepieceByName( ui.e_Id->text() );
++    ks->data()->logObject()->eyepieceList()->removeAll( e );
++    saveEquipment(); //Save the new list.
++    ui.e_Id->clear();
++    ui.e_Model->clear();
++    ui.e_Vendor->clear();
++    ui.Fov->setValue(0);
++    ui.e_focalLength->setValue(0);
++    ui.EyepieceList->clear();
++    foreach( Comast::Eyepiece *e, *( ks->data()->logObject()->eyepieceList() ) )
++        ui.EyepieceList->addItem( e->name() );
++}
++void EquipmentWriter::slotSaveEyepiece() {
++    Comast::Eyepiece *e = ks->data()->logObject()->findEyepieceByName( ui.e_Id->text() );
++    if( e ){
++        e->setEyepiece( ui.e_Id->text(), ui.e_Model->text(), ui.e_Vendor->text(), ui.Fov->value(), ui.FovUnit->currentText(), ui.e_focalLength->value() );
++    } 
++    saveEquipment(); //Save the new list.
++}
++
++void EquipmentWriter::slotSetEyepiece( QString name ) {
++    Comast::Eyepiece *e;
++    e = ks->data()->logObject()->findEyepieceByName( name ); 
++    if( e ) {
++        ui.e_Id->setText( e->id() );
++        ui.e_Model->setText( e->model() );
++        ui.e_Vendor->setText( e->vendor() );
++        ui.Fov->setValue( e->appFov() );
++        ui.e_focalLength->setValue( e->focalLength() );
++        newEyepiece = false;
++    }
++}
++
++void EquipmentWriter::slotNewEyepiece() {
++    ui.e_Id->clear();
++    ui.e_Model->clear();
++    ui.e_Vendor->clear();
++    ui.Fov->setValue(0);
++    ui.e_focalLength->setValue(0);
++    ui.EyepieceList->selectionModel()->clear();
++    newEyepiece = true;
++}
++
++void EquipmentWriter::slotAddLens() {
++    while ( ks->data()->logObject()->findLensById( i18n("lens_") + QString::number( nextLens ) ) )
++    nextLens++;
++    Comast::Lens *l = new Comast::Lens( i18n("lens_") + QString::number( nextLens++ ), ui.l_Model->text(), ui.l_Vendor->text(), ui.l_Factor->value() );
++    ks->data()->logObject()->lensList()->append( l );
++    saveEquipment(); //Save the new list.
++    ui.l_Id->clear();
++    ui.l_Model->clear();
++    ui.l_Vendor->clear();
++    ui.l_Factor->setValue(0);
++}
++
++void EquipmentWriter::slotRemoveLens() {
++    Comast::Lens *l = ks->data()->logObject()->findLensByName( ui.l_Id->text() );
++    ks->data()->logObject()->lensList()->removeAll( l );
++    saveEquipment(); //Save the new list.
++    ui.l_Id->clear();
++    ui.l_Model->clear();
++    ui.l_Vendor->clear();
++    ui.l_Factor->setValue(0);
++    ui.LensList->clear();
++    foreach( Comast::Lens *l, *( ks->data()->logObject()->lensList() ) )
++        ui.LensList->addItem( l->name() );
++}
++void EquipmentWriter::slotSaveLens() {
++    Comast::Lens *l = ks->data()->logObject()->findLensByName( ui.l_Id->text() );
++    if( l ){
++        l->setLens( ui.l_Id->text(), ui.l_Model->text(), ui.l_Vendor->text(), ui.l_Factor->value() );
++    }
++    saveEquipment(); //Save the new list.
++}
++
++void EquipmentWriter::slotSetLens( QString name ) {
++    Comast::Lens *l;
++    l = ks->data()->logObject()->findLensByName( name );
++    if( l ) {
++        ui.l_Id->setText( l->id() );
++        ui.l_Model->setText( l->model() );
++        ui.l_Vendor->setText( l->vendor() );
++        ui.l_Factor->setValue( l->factor() );
++        newLens = false;
++    }
++}
++
++void EquipmentWriter::slotNewLens() {
++    ui.l_Id->clear();
++    ui.l_Model->clear();
++    ui.l_Vendor->clear();
++    ui.l_Factor->setValue(0);
++    ui.LensList->selectionModel()->clear();
++    newLens = true;
++}
++
++void EquipmentWriter::slotAddFilter() {
++    while ( ks->data()->logObject()->findFilterById( i18n("filter_") + QString::number( nextFilter ) ) )
++    nextFilter++;
++    Comast::Filter *f = new Comast::Filter( i18n("filter_") + QString::number( nextFilter++ ), ui.f_Model->text(), ui.f_Vendor->text(), ui.f_Type->text(), ui.f_Color->text() );
++    ks->data()->logObject()->filterList()->append( f );
++    saveEquipment(); //Save the new list.
++    ui.f_Id->clear();
++    ui.f_Model->clear();
++    ui.f_Vendor->clear();
++    ui.f_Type->clear();
++    ui.f_Color->clear();
++}
++
++void EquipmentWriter::slotRemoveFilter() {
++    Comast::Filter *f = ks->data()->logObject()->findFilterByName( ui.f_Id->text() );
++    ks->data()->logObject()->filterList()->removeAll( f );
++    saveEquipment(); //Save the new list.
++    ui.f_Id->clear();
++    ui.f_Model->clear();
++    ui.f_Vendor->clear();
++    ui.f_Type->clear();
++    ui.f_Color->clear();
++    ui.FilterList->clear();
++    foreach( Comast::Filter *f, *( ks->data()->logObject()->filterList() ) )
++        ui.FilterList->addItem( f->name() );
++}
++
++void EquipmentWriter::slotSaveFilter() {
++    Comast::Filter *f = ks->data()->logObject()->findFilterByName( ui.f_Id->text() );
++    if( f ){
++        f->setFilter( ui.f_Id->text(), ui.f_Model->text(), ui.f_Vendor->text(), ui.f_Type->text(), ui.f_Color->text() );
++    } 
++    saveEquipment(); //Save the new list.
++}
++
++void EquipmentWriter::slotSetFilter( QString name ) {
++    Comast::Filter *f;
++    f = ks->data()->logObject()->findFilterByName( name ); 
++    if( f ) {
++        ui.f_Id->setText( f->id() );
++        ui.f_Model->setText( f->model() );
++        ui.f_Vendor->setText( f->vendor() );
++        ui.f_Type->setText( f->type() );
++        ui.f_Color->setText( f->color() );
++        newFilter = false;
++    }
++}
++
++void EquipmentWriter::slotNewFilter() {
++    ui.f_Id->clear();
++    ui.f_Model->clear();
++    ui.f_Vendor->clear();
++    ui.f_Type->clear();
++    ui.f_Color->clear();
++    ui.FilterList->selectionModel()->clear();
++    newFilter = true;
++}
++
++void EquipmentWriter::saveEquipment() {
++    QFile f;
++    f.setFileName( KStandardDirs::locateLocal( "appdata", "equipmentlist.xml" ) );   
++    if ( ! f.open( QIODevice::WriteOnly ) ) {
++        kDebug() << "Cannot write list to  file";
++        return;
++    }
++    QTextStream ostream( &f );
++    ks->data()->logObject()->writeBegin();
++    ks->data()->logObject()->writeScopes();
++    ks->data()->logObject()->writeEyepieces();
++    ks->data()->logObject()->writeLenses();
++    ks->data()->logObject()->writeFilters();
++    ks->data()->logObject()->writeEnd();
++    ostream << ks->data()->logObject()->writtenOutput();
++    f.close();
++}
++
++void EquipmentWriter::loadEquipment() {
++    QFile f;
++    f.setFileName( KStandardDirs::locateLocal( "appdata", "equipmentlist.xml" ) );   
++    if( ! f.open( QIODevice::ReadOnly ) )
++        return;
++    QTextStream istream( &f );
++    ks->data()->logObject()->readBegin( istream.readAll() );
++    f.close();
++    ui.ScopeList->clear();
++    ui.EyepieceList->clear();
++    ui.LensList->clear();
++    ui.FilterList->clear();
++    foreach( Comast::Scope *s, *( ks->data()->logObject()->scopeList() ) )
++        ui.ScopeList->addItem( s->name() );
++    foreach( Comast::Eyepiece *e, *( ks->data()->logObject()->eyepieceList() ) )
++        ui.EyepieceList->addItem( e->name() );
++    foreach( Comast::Lens *l, *( ks->data()->logObject()->lensList() ) )
++        ui.LensList->addItem( l->name() );
++    foreach( Comast::Filter *f, *( ks->data()->logObject()->filterList() ) )
++        ui.FilterList->addItem( f->name() );
++}
++
++void EquipmentWriter::slotSave() {
++    switch( ui.tabWidget->currentIndex() ) {
++        case 0: {
++            if( newScope )
++                slotAddScope();
++            else
++                slotSaveScope();
++            ui.ScopeList->clear();
++            foreach( Comast::Scope *s, *( ks->data()->logObject()->scopeList() ) )
++                ui.ScopeList->addItem( s->name() );
++            break;
++        }
++        case 1: {
++            if( newEyepiece )
++                slotAddEyepiece();
++            else
++                slotSaveEyepiece();
++            ui.EyepieceList->clear();
++            foreach( Comast::Eyepiece *e, *( ks->data()->logObject()->eyepieceList() ) )
++                ui.EyepieceList->addItem( e->name() );
++            break;
++        }
++        case 2: {
++            if( newLens )
++                slotAddLens();
++            else
++                slotSaveLens();
++            ui.LensList->clear();
++            foreach( Comast::Lens *l, *( ks->data()->logObject()->lensList() ) )
++                ui.LensList->addItem( l->name() );
++            break;
++        }
++        case 3: {
++            if( newFilter )
++                slotAddFilter();
++            else
++                slotSaveFilter();
++            ui.FilterList->clear();
++            foreach( Comast::Filter *f, *( ks->data()->logObject()->filterList() ) )
++                ui.FilterList->addItem( f->name() );
++            break;
++        }
++    }
++}
++#include "equipmentwriter.moc"
+Index: kstars/comast/site.cpp
+===================================================================
+--- kstars/comast/site.cpp	(revision 0)
++++ kstars/comast/site.cpp	(revision 1010979)
+@@ -0,0 +1,35 @@
++/***************************************************************************
++                          site.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/site.h"
++
++void Comast::Site::setSite(QString _id, QString _name, double _lat, QString _latUnit, double _lon, QString _lonUnit ){
++    m_Id = _id;
++    m_Name = _name;
++    m_Lat = _lat;
++    m_Lon = _lon;
++    m_LatUnit = _latUnit;
++    m_LonUnit = _lonUnit;
++}
++void Comast::Site::setSite( GeoLocation *geo, QString id ) {
++    m_Id = id;
++    m_Name = geo->name();
++    m_Lat = geo->lat()->radians();
++    m_Lon = geo->lng()->radians();
++    m_LatUnit = m_LonUnit = "rad";
++}
+Index: kstars/comast/observeradd.h
+===================================================================
+--- kstars/comast/observeradd.h	(revision 0)
++++ kstars/comast/observeradd.h	(revision 1010979)
+@@ -0,0 +1,56 @@
++/***************************************************************************
++                          observeradd.h  -  description
++
++                             -------------------
++    begin                : Sunday July 26, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#ifndef OBSERVERADD_H_
++#define OBSERVERADD_H_
++
++#include "ui_observeradd.h"
++
++#include <QWidget>
++#include <kdialog.h>
++
++#include "kstars.h"
++
++class ObserverAdd : public KDialog {
++Q_OBJECT
++    public:
++        //The default constructor
++        ObserverAdd();
++
++        /*@short function to load the list of
++         * observers from the file
++         */
++        void loadObservers();
++
++        /*@short function to save the list of
++         * observers to the file
++         */
++        void saveObservers();
++
++    public slots:
++        /*@short function to add the new observer
++         * to the observerList of the global logObject
++         */
++        void slotAddObserver();
++
++    private:
++        KStars *ks;
++        Ui::ObserverAdd ui;
++        int nextObserver;
++};
++#endif
+Index: kstars/comast/lens.h
+===================================================================
+--- kstars/comast/lens.h	(revision 0)
++++ kstars/comast/lens.h	(revision 1010979)
+@@ -0,0 +1,38 @@
++/***************************************************************************
++                          lens.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef LENS_H_
++#define LENS_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++class Comast::Lens {
++    public:
++        Lens( QString id, QString model, QString vendor, double factor ) { setLens( id, model, vendor, factor ); }
++        QString id() { return m_Id; }
++        QString name() { return m_Name; }
++        QString model() { return m_Model; }
++        QString vendor() { return m_Vendor; }
++        double factor() { return m_Factor; }
++        void setLens( QString _id, QString _model, QString _vendor, double _factor );
++    private:
++        QString m_Id, m_Model, m_Vendor, m_Name;
++        double m_Factor;
++};
++#endif
+Index: kstars/comast/execute.h
+===================================================================
+--- kstars/comast/execute.h	(revision 0)
++++ kstars/comast/execute.h	(revision 1010979)
+@@ -0,0 +1,140 @@
++/***************************************************************************
++                          execute.h  -  description
++
++                             -------------------
++    begin                : Friday July 21, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan*@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#ifndef EXECUTE_H_
++#define EXECUTE_H_
++
++#include "ui_execute.h"
++
++#include <QWidget>
++#include<kdialog.h>
++
++#include "kstars.h"
++#include "geolocation.h"
++#include "comast/comast.h"
++#include "comast/session.h"
++#include "skyobjects/skyobject.h"
++
++class KStars;
++
++class Execute : public KDialog {
++Q_OBJECT
++    public:
++        /**@short Default constructor
++         */
++        Execute();
++        
++        /**@short This initializes the combo boxes, and sets up the 
++         * dateTime and geolocation from the OL
++         */
++        void init();
++
++    public slots:
++        /**@short Function to handle the UI when the 'next' button is pressed
++         * This calls the corresponding functions based on the currentIndex
++         */
++        void slotNext();
++
++        /*Function to Save the session details*/
++        bool saveSession();
++
++        /**@short Function to save the user notes set for 
++         * the current object in the target combo box
++         */
++        void addTargetNotes();
++
++        /**@short Function to add the current observation to the observation list
++         */
++        bool addObservation();
++
++        /**@short Function to handle the state of current observation,
++         * and hiding the execute window
++         */
++        void slotEndSession();
++
++        /**@short Opens the location dialog for setting the current location
++         */
++        void slotLocation();
++
++        /**@short Loads the sessionlist from the OL
++         * into the target combo box
++         */
++        void loadTargets();
++
++        /**@short Sorts the target list using the scheduled time
++         */
++        void sortTargetList();
++
++        /**@short Custom LessThan function for the sort by time
++         * This compares the times of the two skyobjects
++         * using an edited QTime as next day 01:00 should
++         * come later than previous night 23:00
++         */
++        static bool timeLessThan( SkyObject *, SkyObject * );
++
++        /**@short set the currentTarget when the user selection
++         * is changed in the target combo box
++         */
++        void slotSetTarget( QString name );
++
++        /**@short loads the equipment list from
++         * the global logObject into the comboBoxes
++         */
++        void loadEquipment();
++
++        /**@short loads the observer list from
++         * the global logObject into the comboBoxes
++         */
++        void loadObservers();
++        
++        /**@short loads the observation edit page
++         */
++        void loadObservationTab();
++
++        void selectNextTarget();
++
++        void loadCurrentItems();
++
++        void slotSetCurrentObjects();
++
++        void slotSlew();
++
++        void slotShowSession();
++
++        void slotShowTargets();
++
++        int findIndexOfTarget( QString );
++
++        void slotAddObject();
++
++    private:
++        KStars *ks;
++        Ui::Execute ui;
++        Comast::Session *currentSession;
++        Comast::Log *logObject;
++        Comast::Observer *currentObserver;
++        Comast::Scope *currentScope;
++        Comast::Eyepiece *currentEyepiece;
++        Comast::Lens *currentLens;
++        Comast::Filter *currentFilter;
++        GeoLocation *geo;
++        SkyObject *currentTarget;
++        int nextSession, nextObservation, nextSite;
++};
++
++#endif
+Index: kstars/comast/equipmentwriter.h
+===================================================================
+--- kstars/comast/equipmentwriter.h	(revision 0)
++++ kstars/comast/equipmentwriter.h	(revision 1010979)
+@@ -0,0 +1,70 @@
++/***************************************************************************
++                          equipmentwriter.h  -  description
++
++                             -------------------
++    begin                : Friday July 19, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#ifndef EQUIPMENTWRITER_H_
++#define EQUIPMENTWRITER_H_
++
++#include "ui_equipmentwriter.h"
++
++#include <QWidget>
++#include <kdialog.h>
++
++#include "kstars.h"
++
++class KStars;
++
++class EquipmentWriter : public KDialog {
++Q_OBJECT
++    public:
++        EquipmentWriter();
++        void saveEquipment();
++        void loadEquipment();
++
++    public slots:
++        void slotAddScope();
++        void slotAddEyepiece();
++        void slotAddLens();
++        void slotAddFilter();
++        void slotSaveScope();
++        void slotSaveEyepiece();
++        void slotSaveLens();
++        void slotSaveFilter();
++        void slotRemoveScope();
++        void slotRemoveEyepiece();
++        void slotRemoveLens();
++        void slotRemoveFilter();
++        void slotSetScope( QString );
++        void slotSetEyepiece( QString );
++        void slotSetLens( QString );
++        void slotSetFilter( QString );
++        void slotNewScope();
++        void slotNewEyepiece();
++        void slotNewLens();
++        void slotNewFilter();
++        void slotClose() { hide(); }
++        void slotSave();
++
++    private:
++        KStars *ks;
++        Ui::EquipmentWriter ui;
++        bool newScope, newEyepiece, newLens, newFilter;
++        int nextScope, nextEyepiece, nextLens, nextFilter;
++
++};
++
++#endif
+Index: kstars/comast/scope.cpp
+===================================================================
+--- kstars/comast/scope.cpp	(revision 0)
++++ kstars/comast/scope.cpp	(revision 1010979)
+@@ -0,0 +1,28 @@
++/***************************************************************************
++                          scope.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/scope.h"
++void Comast::Scope::setScope( QString _id, QString _model, QString _vendor, QString _type, double _focalLength, double _aperture ) {
++    m_Id = _id;
++    m_Model = _model;
++    m_Vendor = _vendor;
++    m_Type = _type;
++    m_FocalLength = _focalLength;
++    m_Aperture = _aperture;
++    m_Name.append ( _vendor + " " + _model + " " + QString::number( _aperture ) + "mm f/" + QString::number( (_focalLength/_aperture), 'g', 1 ) + " (" + _id + ")" ) ; 
++}
+Index: kstars/comast/site.h
+===================================================================
+--- kstars/comast/site.h	(revision 0)
++++ kstars/comast/site.h	(revision 1010979)
+@@ -0,0 +1,43 @@
++/***************************************************************************
++                          site.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef SITE_H_
++#define SITE_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++#include "geolocation.h"
++
++class Comast::Site {
++    public:
++       Site( QString id,  QString name, double lat, QString latUnit, double lon, QString lonUnit ) { setSite( id, name, lat, latUnit, lon, lonUnit ); }
++       Site( GeoLocation *geo, QString id ) { setSite( geo, id ); }
++       QString id() { return m_Id; }
++       QString name() { return m_Name; }
++       double latitude() { return m_Lat; }
++       QString latUnit() { return m_LatUnit; }
++       double longitude() { return m_Lon; }
++       QString lonUnit() { return m_LonUnit; }
++       void setSite( QString _id, QString _name, double _lat, QString _latUnit, double _lon, QString _lonUnit);
++       void setSite( GeoLocation *geo, QString id );
++    private:
++        QString m_Name, m_LatUnit, m_LonUnit, m_Id;
++        double m_Lat, m_Lon;
++};
++#endif
+Index: kstars/comast/scope.h
+===================================================================
+--- kstars/comast/scope.h	(revision 0)
++++ kstars/comast/scope.h	(revision 1010979)
+@@ -0,0 +1,40 @@
++/***************************************************************************
++                          scope.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef SCOPE_H_
++#define SCOPE_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++class Comast::Scope {
++    public:
++        Scope( QString id, QString model, QString vendor, QString type, double focalLength, double aperture ) { setScope( id, model, vendor, type, focalLength, aperture ); }
++        QString id() { return m_Id; }
++        QString model() { return m_Model; }
++        QString vendor() { return m_Vendor; }
++        QString type() { return m_Type; }
++        QString name() { return m_Name; }
++        double focalLength() { return m_FocalLength; }
++        double aperture() { return m_Aperture; }
++        void setScope( QString _id, QString _model, QString _vendor, QString _type, double _focalLength, double _aperture );
++    private:
++        QString m_Id, m_Model, m_Vendor, m_Type, m_Name;
++        double m_FocalLength, m_Aperture;
++};
++#endif
+Index: kstars/comast/log.cpp
+===================================================================
+--- kstars/comast/log.cpp	(revision 0)
++++ kstars/comast/log.cpp	(revision 1010979)
+@@ -0,0 +1,981 @@
++/***************************************************************************
++                          log.cpp  -  description
++
++                             -------------------
++    begin                : Friday June 19, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#include "comast/log.h"
++#include "kstars.h"
++#include "skyobjects/skyobject.h"
++#include "skymap.h"
++#include "skycomponents/constellationboundary.h"
++#include "kstarsdatetime.h"
++
++void Comast::Log::writeBegin() {
++    ks = KStars::Instance();
++    output = "";
++    m_targetList = ks->observingList()->sessionList();
++    writer = new QXmlStreamWriter(&output);
++    writer->setAutoFormatting( true );
++    writer->writeStartDocument();
++    writer->writeNamespace( "http://observation.sourceforge.net/openastronomylog", "oal" );
++    writer->writeNamespace( "http://www.w3.org/2001/XMLSchema-instance", "xsi" );
++    writer->writeNamespace( "http://observation.sourceforge.net/openastronomylog oal20.xsd", "schemaLocation" );
++    writer->writeStartElement("oal:observations");
++    writer->writeAttribute("version", "2.0");
++}
++
++QString Comast::Log::writeLog( bool _native ) {
++    native = _native;
++    writeBegin();
++    if( native )
++        writeGeoDate();
++    writeObservers();
++    writeSites();
++    writeSessions();
++    writeTargets();
++    writeScopes();
++    writeEyepieces();
++    writeLenses();
++    writeFilters();
++    writeImagers();
++    writeObservations();
++    writeEnd();
++    return output;
++}
++
++void Comast::Log::writeEnd() {
++    writer->writeEndDocument();
++    delete writer;
++}
++
++void Comast::Log::writeObservers() {
++    writer->writeStartElement( "observers" );
++    foreach( Comast::Observer *o, m_observerList )
++        writeObserver( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeSites() {
++    writer->writeStartElement("sites");
++    foreach( Comast::Site *o, m_siteList )
++        writeSite( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeSessions() {
++    writer->writeStartElement("sessions");
++    foreach( Comast::Session *o, m_sessionList )
++        writeSession( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeTargets() {
++    writer->writeStartElement("targets");
++    foreach( SkyObject *o, m_targetList ) {
++        writeTarget( o );
++    }
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeScopes() {
++    writer->writeStartElement("scopes");
++    foreach( Comast::Scope *o, m_scopeList )
++        writeScope( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeEyepieces() {
++    writer->writeStartElement("eyepieces");
++    foreach( Comast::Eyepiece *o, m_eyepieceList )
++        writeEyepiece( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeLenses() {
++    writer->writeStartElement("lenses");
++    foreach( Comast::Lens *o, m_lensList )
++        writeLens( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeFilters() {
++    writer->writeStartElement("filters");
++    foreach( Comast::Filter *o, m_filterList )
++        writeFilter( o );
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeImagers() {
++    writer->writeStartElement("imagers");
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeObservations() {
++    foreach( Comast::Observation *o, m_observationList )
++        writeObservation( o );
++}
++
++void Comast::Log::writeTarget( SkyObject *o ) {
++    writer->writeStartElement( "target" );
++    writer->writeAttribute("id", o->name().remove( ' ' ) );
++    QString typeString;
++    if( native )
++        writer->writeAttribute( "type", o->typeName() );
++    else {
++        switch( o->type() ) {
++            case 0: typeString = "oal:starTargetType"; break;
++            case 1: typeString = "oal:starTargetType"; break;
++            case 2: typeString = "oal:PlanetTargetType"; break;
++            case 3: typeString = "oal:deepSkyOC"; break;
++            case 4: typeString = "oal:deepSkyGC"; break;
++            case 5: typeString = "oal:deepSkyGN"; break;
++            case 6: typeString = "oal:deepSkyPN"; break;
++            case 8: typeString = "oal:deepSkyGX"; break;
++            case 9: typeString = "oal:CometTargetType"; break;
++            case 12: typeString = "oal:MoonTargetType"; break;
++            case 13: typeString = "oal:deepSkyAS"; break;
++            case 14: typeString = "oal:deepSkyCG"; break;
++            case 15: typeString = "oal:deepSkyDN"; break;
++            case 16: typeString = "oal:deepSkyQS"; break;
++            case 17: typeString = "oal:deepSkyMS"; break;
++            default: typeString = "oal:deepSkyNA"; break;
++        }
++        writer->writeAttribute("xsi:type", typeString );
++    }
++    writer->writeStartElement( "datasource" );
++    writer->writeCDATA( "KStars" );
++    writer->writeEndElement();
++    writer->writeStartElement("name");
++    writer->writeCDATA( o->name() );
++    writer->writeEndElement();
++    writer->writeStartElement( "position" );
++    writer->writeStartElement( "ra" );
++    writer->writeAttribute("unit", "rad" );
++    writer->writeCharacters( QString::number( o->ra()->radians() ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "dec" );
++    writer->writeAttribute("unit", "rad" );
++    writer->writeCharacters( QString::number( o->dec()->radians() ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++    if( native && ! ks->observingList()->getTime( o ).isEmpty() ) {
++        writer->writeStartElement("time");
++        writer->writeCDATA( ks->observingList()->getTime( o ) );
++        writer->writeEndElement();
++    }
++    writer->writeStartElement( "constellation" );
++    writer->writeCDATA( ConstellationBoundary::Instance()->constellationName( o ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "notes" );
++    writer->writeCDATA( o->notes() );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeObserver( Comast::Observer *o ) {
++    writer->writeStartElement( "observer" );
++    writer->writeAttribute( "id", o->id() );
++    writer->writeStartElement( "name" );
++    writer->writeCDATA( o->name() );
++    writer->writeEndElement();
++    writer->writeStartElement( "surname" );
++    writer->writeCDATA( o->surname() );
++    writer->writeEndElement();
++    writer->writeStartElement( "contact" );
++    writer->writeCDATA( o->contact() );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeSite( Comast::Site *s ) {
++    writer->writeStartElement( "site" );
++    writer->writeAttribute( "id", s->id() );
++    writer->writeStartElement( "name" );
++    writer->writeCDATA( s->name() );
++    writer->writeEndElement();
++    writer->writeStartElement( "latitude" );
++    writer->writeAttribute( "unit",  s->latUnit() );
++    writer->writeCharacters( QString::number( s->latitude() ) );
++    writer->writeStartElement( "longitude" );
++    writer->writeAttribute( "unit", s->lonUnit() );
++    writer->writeCharacters( QString::number( s->longitude() ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeSession( Comast::Session *s ) {
++    writer->writeStartElement( "session" );
++    writer->writeAttribute( "id", s->id() ); 
++    writer->writeStartElement( "begin" );
++    writer->writeCharacters( s->begin().date().toString( "yyyy-MM-dd" ) + "T" + s->begin().time().toString( "hh:mm:ss" ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "end" );
++    writer->writeCharacters( s->end().date().toString( "yyyy-MM-dd" ) + "T" + s->end().time().toString( "hh:mm:ss" ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "site" );
++    writer->writeCharacters( s->site() );
++    writer->writeEndElement();
++    writer->writeStartElement( "weather" );
++    writer->writeCDATA( s->weather() );
++    writer->writeEndElement();
++    writer->writeStartElement( "equipment" );
++    writer->writeCDATA( s->equipment() );
++    writer->writeEndElement();
++    writer->writeStartElement( "comments" );
++    writer->writeCDATA( s->comments() );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeScope( Comast::Scope *s ) {
++    writer->writeStartElement( "scope" );
++    writer->writeAttribute( "id", s->id() ); 
++    writer->writeStartElement( "model" );
++    writer->writeCDATA( s->model() );
++    writer->writeEndElement();
++    writer->writeStartElement( "type" );
++    writer->writeCDATA( s->type().at(0) );
++    writer->writeEndElement();
++    writer->writeStartElement( "vendor" );
++    writer->writeCDATA( s->vendor() );
++    writer->writeEndElement();
++    writer->writeStartElement( "aperture" );
++    writer->writeCharacters( QString::number( s->aperture() ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "focalLength" );
++    writer->writeCharacters( QString::number( s->focalLength() ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeEyepiece( Comast::Eyepiece *ep ) {
++    writer->writeStartElement( "eyepiece" );
++    writer->writeAttribute( "id", ep->id() ); 
++    writer->writeStartElement( "model" );
++    writer->writeCDATA( ep->model() );
++    writer->writeEndElement();
++    writer->writeStartElement( "vendor" );
++    writer->writeCDATA( ep->vendor() );
++    writer->writeEndElement();
++    writer->writeStartElement( "focalLength" );
++    writer->writeCharacters( QString::number( ep->focalLength() ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "apparantFOV" );
++    writer->writeAttribute( "unit", ep->fovUnit() );
++    writer->writeCharacters( QString::number( ep->appFov() ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeLens( Comast::Lens *l ) {
++    writer->writeStartElement( "lens" );
++    writer->writeAttribute( "id", l->id() );
++    writer->writeStartElement( "model" );
++    writer->writeCDATA( l->model() );
++    writer->writeEndElement();
++    writer->writeStartElement( "vendor" );
++    writer->writeCDATA( l->vendor() );
++    writer->writeEndElement();
++    writer->writeStartElement( "factor" );
++    writer->writeCharacters( QString::number( l->factor() ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeFilter( Comast::Filter *f ) {
++    writer->writeStartElement( "filter" );
++    writer->writeAttribute( "id", f->id() );
++    writer->writeStartElement( "model" );
++    writer->writeCDATA( f->model() );
++    writer->writeEndElement();
++    writer->writeStartElement( "vendor" );
++    writer->writeCDATA( f->vendor() );
++    writer->writeEndElement();
++    writer->writeStartElement( "type" );
++    writer->writeCDATA( f->type() );
++    writer->writeEndElement();
++    writer->writeStartElement( "color" );
++    writer->writeCDATA( f->color() );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++
++void Comast::Log::writeObservation( Comast::Observation *o ) {
++    writer->writeStartElement( "observation" );
++    writer->writeStartElement( "observer" );
++    writer->writeCharacters( o->observer() );
++    writer->writeEndElement();
++    writer->writeStartElement( "site" );
++    writer->writeCharacters( o->site() );
++    writer->writeEndElement();
++    writer->writeStartElement( "session" );
++    writer->writeCharacters( o->session() );
++    writer->writeEndElement();
++    writer->writeStartElement( "target" );
++    writer->writeCharacters( o->target().remove( ' ' ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "begin" );
++    writer->writeCharacters( o->begin().date().toString( "yyyy-MM-dd" ) + "T" + o->begin().time().toString( "hh:mm:ss" ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "faintestStar" );
++    writer->writeCharacters( QString::number( o->faintestStar() ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "seeing" );
++    writer->writeCharacters( QString::number( o->seeing() ) );
++    writer->writeEndElement();
++    writer->writeStartElement( "scope" );
++    writer->writeCharacters( o->scope() );
++    writer->writeEndElement();
++    writer->writeStartElement( "eyepiece" );
++    writer->writeCharacters( o->eyepiece() );
++    writer->writeEndElement();
++    writer->writeStartElement( "lens" );
++    writer->writeCharacters( o->lens() );
++    writer->writeEndElement();
++    writer->writeStartElement( "filter" );
++    writer->writeCharacters( o->filter() );
++    writer->writeEndElement();
++    writer->writeStartElement( "result" );
++    writer->writeAttribute( "xsi:type", "oal:findingsType" );
++    writer->writeAttribute( "lang", o->lang() );
++    writer->writeStartElement( "description" );
++    writer->writeCDATA( o->result() );
++    writer->writeEndElement();
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::writeGeoDate() {
++    writer->writeStartElement( "geodate" );
++    writer->writeStartElement( "name" );
++    writer->writeCDATA( ks->observingList()->geoLocation()->name() );
++    writer->writeEndElement();
++    writer->writeStartElement( "province" );
++    writer->writeCDATA( ks->observingList()->geoLocation()->province() );
++    writer->writeEndElement();
++    writer->writeStartElement( "country" );
++    writer->writeCDATA( ks->observingList()->geoLocation()->country() );
++    writer->writeEndElement();
++    writer->writeStartElement( "date" );
++    writer->writeCDATA( ks->observingList()->dateTime().date().toString( "ddMMyyyy" ) );
++    writer->writeEndElement();
++    writer->writeEndElement();
++}
++void Comast::Log::readBegin( QString input ) {
++    reader = new QXmlStreamReader( input );
++    ks = KStars::Instance();
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++        if( reader->isStartElement() ) {
++     //       if( reader->name() == "oal:observations" && reader->attributes().value("version") == "2.0" )
++                readLog();
++        }
++    }
++}
++
++void Comast::Log::readUnknownElement() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++        
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() )
++            readUnknownElement();
++    }
++}
++
++void Comast::Log::readLog() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "targets" )
++                readTargets();
++           else if( reader->name() == "observers" )
++                readObservers();
++           else if( reader->name() == "sites" )
++                readSites();
++           else if( reader->name() == "sessions" )
++                readSessions();
++           else if( reader->name() == "scopes" )
++                readScopes();
++           else if( reader->name() == "eyepieces" )
++                readEyepieces();
++           else if( reader->name() =="lenses" )
++                readLenses();
++           else if( reader->name() =="filters" )
++                readFilters();
++           else if( reader->name() == "observation" ) 
++                readObservation( reader->attributes().value( "id" ).toString() );
++           else if( reader->name() == "geodate" )
++                readGeoDate();
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readTargets() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "target" )
++                readTarget();
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readObservers() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "observer" )
++                readObserver( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readSites() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "site" )
++                readSite( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readSessions() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "session" )
++                readSession( reader->attributes().value( "id" ).toString(), reader->attributes().value( "lang" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readScopes() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "scope" )
++                readScope( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readEyepieces() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "eyepiece" )
++                readEyepiece( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readLenses() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "lens" )
++                readLens( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readFilters() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "filter" )
++                readFilter( reader->attributes().value( "id" ).toString() );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readTarget() {
++    SkyObject *o = NULL;
++    QString name, time, notes;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "name" ) {
++                name = reader->readElementText();
++                if( name != "star" ) {
++                    o = ks->data()->objectNamed( name );
++                    if( ! o ) o = ks->data()->skyComposite()->findStarByGenetiveName( name );
++                    if( o ) targetList()->append( o );
++                }
++            } else if( reader->name() == "time" ) {
++                time = reader->readElementText();
++                if( o )
++                    TimeHash.insert( o->name(), QTime::fromString( time, "h:mm:ss AP" ) );
++            } else if( reader->name() == "notes" ) {
++                notes = reader->readElementText();
++                if( o )
++                    o->setNotes( notes );
++            }
++       //   else  if( reader->name() == "datasource" )
++       //         kDebug() << reader->readElementText();
++       //     else if( reader->name() == "position" )
++       //         readPosition();
++       //     else if( reader->name() == "constellation" )
++       //         kDebug() << reader->readElementText();
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readObserver( QString id ) {
++    QString name, surname, contact;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "name" ) {
++                name = reader->readElementText();
++            } else if( reader->name() == "surname" ) {
++                surname = reader->readElementText();
++            } else if( reader->name() == "contact" ) {
++                contact = reader->readElementText();
++            } else
++                readUnknownElement();
++        }
++    }
++    Comast::Observer *o= new Comast::Observer( id, name, surname, contact );
++    m_observerList.append( o );
++}
++
++void Comast::Log::readSite( QString id ) {
++    QString name, latUnit, lonUnit, lat, lon;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "name" ) {
++                name = reader->readElementText();
++            } else if( reader->name() == "latitude" ) {
++                lat = reader->readElementText() ;
++                latUnit = reader->attributes().value( "unit" ).toString();
++            } else if( reader->name() == "longitude" ) {
++                lon = reader->readElementText() ;
++                lonUnit = reader->attributes().value( "unit" ).toString();
++            } else
++                readUnknownElement();
++        }
++    }
++    Comast::Site *o= new Comast::Site( id, name, lat.toDouble(), latUnit, lon.toDouble(), lonUnit );
++    m_siteList.append( o );
++}
++
++void Comast::Log::readSession( QString id, QString lang ) {
++    QString site, weather, equipment, comments, begin, end;
++    KStarsDateTime beginDT, endDT;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "site" ) {
++                site = reader->readElementText();
++            } else if( reader->name() == "begin" ) {
++                begin = reader->readElementText() ;
++                beginDT.fromString( begin );
++            } else if( reader->name() == "end" ) {
++                end = reader->readElementText() ;
++                endDT.fromString( begin );
++            } else if( reader->name() == "weather" ) {
++                weather = reader->readElementText() ;
++            } else if( reader->name() == "equipment" ) {
++                equipment = reader->readElementText() ;
++            } else if( reader->name() == "comments" ) {
++                comments = reader->readElementText() ;
++            } else
++                readUnknownElement();
++        }
++    }
++    Comast::Session *o= new Comast::Session( id, site, beginDT, endDT, weather, equipment, comments, lang );
++    m_sessionList.append( o );
++}
++
++void Comast::Log::readScope( QString id ) {
++    QString model, focalLength, vendor, type, aperture;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "model" ) {
++                model = reader->readElementText();
++            } else if( reader->name() == "vendor" ) {
++                vendor = reader->readElementText() ;
++            } else if( reader->name() == "type" ) {
++                type = reader->readElementText() ;
++                if( type == "N" ) type = "Newtonian";
++                if( type == "R" ) type = "Refractor";
++                if( type == "M" ) type = "Maksutov";
++                if( type == "S" ) type = "Schmidt-Cassegrain";
++                if( type == "K" ) type = "Kutter (Schiefspiegler)";
++                if( type == "C" ) type = "Cassegrain";
++            } else if( reader->name() == "focalLength" ) {
++                focalLength = reader->readElementText() ;
++            } else if( reader->name() == "aperture" ) {
++                aperture = reader->readElementText() ;
++            } else
++                readUnknownElement();
++        }
++    }
++    
++    Comast::Scope *o= new Comast::Scope( id, model, vendor, type, focalLength.toDouble(), aperture.toDouble() );
++    m_scopeList.append( o );
++}
++
++void Comast::Log::readEyepiece( QString id ) {
++    QString model, focalLength, vendor, fov, fovUnit;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "model" ) {
++                model = reader->readElementText();
++            } else if( reader->name() == "vendor" ) {
++                vendor = reader->readElementText() ;
++            } else if( reader->name() == "apparentFOV" ) {
++                fov = reader->readElementText();
++                fovUnit = reader->attributes().value( "unit" ).toString();
++            } else if( reader->name() == "focalLength" ) {
++                focalLength = reader->readElementText() ;
++            } else
++                readUnknownElement();
++        }
++    }
++    
++    Comast::Eyepiece *o= new Comast::Eyepiece( id, model, vendor, fov.toDouble(), fovUnit, focalLength.toDouble() );
++    m_eyepieceList.append( o );
++}
++
++void Comast::Log::readLens( QString id ) {
++    QString model, factor, vendor;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "model" ) {
++                model = reader->readElementText();
++            } else if( reader->name() == "vendor" ) {
++                vendor = reader->readElementText() ;
++            } else if( reader->name() == "factor" ) {
++                factor = reader->readElementText() ;
++            } else
++                readUnknownElement();
++        }
++    }
++    
++    Comast::Lens *o= new Comast::Lens( id, model, vendor, factor.toDouble() );
++    m_lensList.append( o );
++}
++
++void Comast::Log::readFilter( QString id ) {
++    QString model, vendor, type, color;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "model" ) {
++                model = reader->readElementText();
++            } else if( reader->name() == "vendor" ) {
++                vendor = reader->readElementText() ;
++            } else if( reader->name() == "type" ) {
++                type = reader->readElementText() ;
++            } else if( reader->name() == "color" ) {
++                color = reader->readElementText() ;
++            } else
++                readUnknownElement();
++        }
++    }
++    Comast::Filter *o= new Comast::Filter( id, model, vendor, type, color );
++    m_filterList.append( o );
++}
++
++void Comast::Log::readPosition() {
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "ra" )
++                kDebug() << reader->readElementText() << reader->attributes().value( "unit" );
++            else if( reader->name() == "dec" )
++                kDebug() << reader->readElementText() << reader->attributes().value( "unit" );
++            else
++                readUnknownElement();
++        }
++    }
++}
++
++void Comast::Log::readObservation( QString id ) {
++    QString observer, site, session, target, faintestStar, seeing, scope, eyepiece, lens, filter, result, lang;
++    KStarsDateTime begin;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++        if( reader->isEndElement() )
++            break;
++        if( reader->isStartElement() ) {
++            if( reader->name() == "observer" )
++                observer = reader->readElementText();
++            else if( reader->name() == "site" )
++                site = reader->readElementText();
++            else if( reader->name() == "session" )
++                session = reader->readElementText();
++            else if( reader->name() == "target" )
++                target = reader->readElementText();
++            else if( reader->name() == "begin" )
++                begin.fromString( reader->readElementText() );
++            else if( reader->name() == "faintestStar" )
++                faintestStar = reader->readElementText();
++            else if( reader->name() == "seeing" )
++                seeing = reader->readElementText();
++            else if( reader->name() == "scope" )
++                scope = reader->readElementText();
++            else if( reader->name() == "eyepiece" )
++                eyepiece = reader->readElementText();
++            else if( reader->name() == "lens" )
++                lens = reader->readElementText();
++            else if( reader->name() == "filter" )
++                filter = reader->readElementText();
++            else if( reader->name() == "result" ) {
++                lang = reader->attributes().value( "lang" ).toString();
++                result = readResult();
++            } else
++                readUnknownElement();
++        }
++    }
++        Comast::Observation *o = new Comast::Observation( id, observer, site, session, target, begin, faintestStar.toDouble(), seeing.toDouble(), scope, eyepiece, lens, filter, result, lang );
++        m_observationList.append( o );
++}
++
++QString Comast::Log::readResult() {
++    QString result;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++        if( reader->isStartElement() ) {
++            if( reader->name() == "description" )
++                result = reader->readElementText();
++            else
++                readUnknownElement();
++        }
++    }
++    return result;
++}
++
++void Comast::Log::readGeoDate() {
++    QString name, province, country, date;
++    while( ! reader->atEnd() ) {
++        reader->readNext();
++
++        if( reader->isEndElement() )
++            break;
++
++        if( reader->isStartElement() ) {
++            if( reader->name() == "name" )
++                name = reader->readElementText();
++            else if( reader->name() == "province" )
++                province = reader->readElementText();
++            else if( reader->name() == "country" )
++                country = reader->readElementText();
++            else if( reader->name() == "date" ){
++                date = reader->readElementText();
++            } else
++                readUnknownElement();
++        }
++    }
++    geo = ks->data()->locationNamed( name, province, country );
++    dt.setDate( QDate::fromString( date, "ddMMyyyy" ) );
++}
++
++Comast::Observer* Comast::Log::findObserverByName( QString name ) {
++    foreach( Comast::Observer *obs, *observerList() )
++        if( obs->name() + " " + obs->surname() == name )
++            return obs;
++    return NULL;
++}
++
++Comast::Observer* Comast::Log::findObserverById( QString id ) {
++    foreach( Comast::Observer *obs, *observerList() )
++        if( obs->id() == id )
++            return obs;
++    return NULL;
++}
++
++Comast::Session* Comast::Log::findSessionByName( QString id ) {
++    foreach( Comast::Session *s, *sessionList() )
++        if( s->id()  == id )
++            return s;
++    return NULL;
++}
++
++Comast::Site* Comast::Log::findSiteById( QString id ) {
++    foreach( Comast::Site *s, *siteList() )
++        if( s->id()  == id )
++            return s;
++    return NULL;
++}
++
++Comast::Site* Comast::Log::findSiteByName( QString name ) {
++    foreach( Comast::Site *s, *siteList() )
++        if( s->name()  == name )
++            return s;
++    return NULL;
++}
++
++Comast::Scope* Comast::Log::findScopeById( QString id ) {
++    foreach( Comast::Scope *s, *scopeList() )
++        if( s->id()  == id )
++            return s;
++    return NULL;
++}
++
++Comast::Eyepiece* Comast::Log::findEyepieceById( QString id ) {
++    foreach( Comast::Eyepiece *e, *eyepieceList() )
++        if( e->id()  == id )
++            return e;
++    return NULL;
++}
++
++Comast::Lens* Comast::Log::findLensById( QString id ) {
++    foreach( Comast::Lens *l, *lensList() )
++        if( l->id()  == id )
++            return l;
++    return NULL;
++}
++
++Comast::Filter* Comast::Log::findFilterById( QString id ) {
++    foreach( Comast::Filter *f, *filterList() )
++        if( f->id()  == id )
++            return f;
++    return NULL;
++}
++
++Comast::Scope* Comast::Log::findScopeByName( QString name ) {
++    foreach( Comast::Scope *s, *scopeList() )
++        if( s->name()  == name )
++            return s;
++    return NULL;
++}
++
++Comast::Eyepiece* Comast::Log::findEyepieceByName( QString name ) {
++    foreach( Comast::Eyepiece *e, *eyepieceList() )
++        if( e->name()  == name )
++            return e;
++    return NULL;
++}
++
++Comast::Filter* Comast::Log::findFilterByName( QString name ) {
++    foreach( Comast::Filter *f, *filterList() )
++        if( f->name()  == name )
++            return f;
++    return NULL;
++}
++
++Comast::Lens* Comast::Log::findLensByName( QString name ) {
++    foreach( Comast::Lens *l, *lensList() )
++        if( l->name()  == name )
++            return l;
++    return NULL;
++}
++
++Comast::Observation* Comast::Log::findObservationByName( QString id ) {
++    foreach( Comast::Observation *o, *observationList() )
++        if( o->id()  == id )
++            return o;
++    return NULL;
++}
+Index: kstars/comast/session.cpp
+===================================================================
+--- kstars/comast/session.cpp	(revision 0)
++++ kstars/comast/session.cpp	(revision 1010979)
+@@ -0,0 +1,30 @@
++/***************************************************************************
++                          session.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/session.h"
++
++void Comast::Session::setSession( QString _name, QString _site, KStarsDateTime _begin, KStarsDateTime _end, QString _weather, QString _equipment, QString _comment, QString _lang ) {
++    m_Site = _site;
++    m_Begin = _begin;
++    m_End = _end;
++    m_Weather = _weather;
++    m_Equipment = _equipment;
++    m_Comment = _comment;
++    m_Lang = _lang;
++    m_Id = _name;
++}
+Index: kstars/comast/filter.cpp
+===================================================================
+--- kstars/comast/filter.cpp	(revision 0)
++++ kstars/comast/filter.cpp	(revision 1010979)
+@@ -0,0 +1,28 @@
++/***************************************************************************
++                          filter.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/filter.h"
++
++void Comast::Filter::setFilter( QString _id, QString _model, QString _vendor, QString _type, QString _color ){ 
++    m_Id = _id;
++    m_Model = _model;
++    m_Vendor = _vendor;
++    m_Type = _type;
++    m_Color = _color;
++    m_Name = _vendor + " " + _model + " - " + _type + " " + _color + " (" + _id + ")";  
++}
+Index: kstars/comast/log.h
+===================================================================
+--- kstars/comast/log.h	(revision 0)
++++ kstars/comast/log.h	(revision 1010979)
+@@ -0,0 +1,139 @@
++/***************************************************************************
++                          log.h  -  description
++
++                             -------------------
++    begin                : Friday June 19, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef LOG_H_
++#define LOG_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++#include <QXmlStreamReader>
++#include <QXmlStreamWriter>
++
++#include "kstars.h"
++#include "dms.h"
++#include "skyobjects/skyobject.h"
++#include "comast/observer.h"
++#include "comast/site.h"
++#include "comast/session.h"
++#include "comast/scope.h"
++#include "comast/eyepiece.h"
++#include "comast/filter.h"
++#include "comast/lens.h"
++#include "comast/observation.h"
++
++class KStars;
++
++class Comast::Log {
++    public:
++        QString writeLog( bool native = true );
++        void writeBegin();
++        void writeGeoDate();
++        void writeObservers();
++        void writeSites();
++        void writeSessions();
++        void writeTargets();
++        void writeScopes();
++        void writeEyepieces();
++        void writeLenses();
++        void writeFilters();
++        void writeImagers();
++        void writeObservations();
++        inline QList<SkyObject *> *targetList() { return &m_targetList; }
++        inline QList<Comast::Scope *> *scopeList() { return &m_scopeList; }
++        inline QList<Comast::Site *> *siteList() { return &m_siteList; }
++        inline QList<Comast::Session *> *sessionList() { return &m_sessionList; }
++        inline QList<Comast::Eyepiece *> *eyepieceList() { return &m_eyepieceList; }
++        inline QList<Comast::Lens *> *lensList() { return &m_lensList; }
++        inline QList<Comast::Filter *> *filterList() { return &m_filterList; }
++        inline QList<Comast::Observation *> *observationList() { return &m_observationList; }
++        inline QList<Comast::Observer *> *observerList() { return &m_observerList; }
++        void writeObserver( Comast::Observer *o );
++        void writeSite( Comast::Site *s );
++        void writeSession( Comast::Session *s );
++        void writeTarget( SkyObject *o );
++        void writeScope( Comast::Scope *s );
++        void writeEyepiece( Comast::Eyepiece *ep );
++        void writeLens( Comast::Lens *l );
++        void writeFilter(Comast::Filter *f );
++        void writeObservation( Comast::Observation *o );
++//        void writeImager();
++        void writeEnd();
++        void readBegin( QString input );
++        void readLog();
++        void readUnknownElement();
++        void readTargets();
++        void readObservers();
++        void readSites();
++        void readSessions();
++        void readScopes();
++        void readEyepieces();
++        void readLenses();
++        void readFilters();
++        void readObservation( QString id );
++        void readTarget();
++        void readObserver( QString id );
++        void readSite( QString id );
++        void readSession( QString id, QString lang );
++        void readScope( QString id );
++        void readEyepiece( QString id );
++        void readLens( QString id );
++        void readFilter( QString id );
++        void readPosition();
++        void readGeoDate();
++        QString readResult();
++        Comast::Observer* findObserverByName( QString fullName );
++        Comast::Observer* findObserverById( QString id );
++        Comast::Site* findSiteByName( QString name );
++        Comast::Site* findSiteById( QString id );
++        Comast::Session* findSessionByName( QString id );
++        Comast::Scope* findScopeByName( QString name );
++        Comast::Scope* findScopeById( QString id );
++        Comast::Eyepiece* findEyepieceById( QString id );
++        Comast::Lens* findLensById( QString id );
++        Comast::Filter* findFilterById( QString id );
++        Comast::Eyepiece* findEyepieceByName( QString name );
++        Comast::Lens* findLensByName( QString name );
++        Comast::Filter* findFilterByName( QString name );
++        Comast::Observation* findObservationByName( QString name );
++        QHash<QString, QTime> timeHash() { return TimeHash; }
++        KStarsDateTime dateTime() { return dt; }
++        GeoLocation* geoLocation() { return geo; }
++        inline QString writtenOutput() { return output; }
++    private:
++        QList<SkyObject *> m_targetList;
++        QList<Comast::Observer *> m_observerList;
++        QList<Comast::Eyepiece *> m_eyepieceList; 
++        QList<Comast::Lens *> m_lensList; 
++        QList<Comast::Filter *> m_filterList;
++//        QList<Comast::Equipment *> m_equipmentList;
++//        QList<Comast::Imager *> m_imagerList;
++        QList<Comast::Site *> m_siteList;
++        QList<Comast::Session *> m_sessionList;
++        QList<Comast::Scope *> m_scopeList;
++        QList<Comast::Observation *> m_observationList;
++        QString output;
++        bool native;
++        dms ra, dec;
++        KStars *ks;
++        QXmlStreamWriter *writer;
++        QXmlStreamReader *reader;
++        QHash<QString, QTime> TimeHash;
++        KStarsDateTime dt;
++        GeoLocation *geo;
++};
++#endif
+Index: kstars/comast/observer.cpp
+===================================================================
+--- kstars/comast/observer.cpp	(revision 0)
++++ kstars/comast/observer.cpp	(revision 1010979)
+@@ -0,0 +1,26 @@
++/***************************************************************************
++                          observer.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/observer.h"
++
++void Comast::Observer::setObserver( QString _id, QString _name, QString _surname, QString _contact ){
++    m_Id = _id;
++    m_Name = _name;
++    m_Surname = _surname;
++    m_Contact = _contact;
++}
+Index: kstars/comast/eyepiece.cpp
+===================================================================
+--- kstars/comast/eyepiece.cpp	(revision 0)
++++ kstars/comast/eyepiece.cpp	(revision 1010979)
+@@ -0,0 +1,29 @@
++/***************************************************************************
++                          eyepiece.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/eyepiece.h"
++
++void Comast::Eyepiece::setEyepiece( QString _id, QString _model, QString _vendor, double _fov, QString _fovUnit, double _focalLength ) {
++    m_Id = _id;
++    m_Model = _model;
++    m_Vendor = _vendor;
++    m_AppFovUnit = _fovUnit;
++    m_AppFOV = _fov;
++    m_FocalLength = _focalLength;
++    m_Name = _vendor + " " + _model + " " + QString::number( _focalLength ) + "mm (" + _id +  ")";
++}
+Index: kstars/comast/session.h
+===================================================================
+--- kstars/comast/session.h	(revision 0)
++++ kstars/comast/session.h	(revision 1010979)
+@@ -0,0 +1,42 @@
++/***************************************************************************
++                          session.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef SESSION_H_
++#define SESSION_H_
++
++#include "comast/comast.h"
++#include "kstarsdatetime.h"
++
++#include <QString>
++
++class Comast::Session {
++    public:
++       Session ( QString name, QString site, KStarsDateTime begin, KStarsDateTime end, QString weather, QString equipment, QString comment, QString lang ) { setSession( name, site, begin, end, weather, equipment, comment, lang ); }
++       QString id() { return m_Id; }
++       QString site() { return m_Site; }
++       KStarsDateTime begin() { return m_Begin; }
++       KStarsDateTime end() { return m_End; }
++       QString weather() { return m_Weather; }
++       QString equipment() { return m_Equipment; }
++       QString comments() { return m_Comment; }
++       QString lang() { return m_Lang; }
++       void setSession( QString _name, QString _site, KStarsDateTime _begin, KStarsDateTime _end, QString _weather, QString _equipment, QString _comment, QString _lang = "en" );
++    private:
++        QString m_Site, m_Weather, m_Equipment, m_Comment, m_Lang, m_Id;
++        KStarsDateTime m_Begin, m_End;
++};
++#endif
+Index: kstars/comast/filter.h
+===================================================================
+--- kstars/comast/filter.h	(revision 0)
++++ kstars/comast/filter.h	(revision 1010979)
+@@ -0,0 +1,38 @@
++/***************************************************************************
++                          filter.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef FILTER_H_
++#define FILTER_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++class Comast::Filter {
++    public:
++        Filter( QString id, QString model, QString vendor, QString type, QString color ) { setFilter( id, model, vendor, type, color ); }
++        QString id() { return m_Id; }
++        QString name() { return m_Name; }
++        QString model() { return m_Model; }
++        QString vendor() { return m_Vendor; }
++        QString type() { return m_Type; }
++        QString color() { return m_Color; }
++        void setFilter( QString _id, QString _model, QString _vendor, QString _type, QString _color );
++    private:
++        QString m_Id, m_Model, m_Vendor, m_Type, m_Color, m_Name;
++};
++#endif
+Index: kstars/comast/observation.cpp
+===================================================================
+--- kstars/comast/observation.cpp	(revision 0)
++++ kstars/comast/observation.cpp	(revision 1010979)
+@@ -0,0 +1,36 @@
++/***************************************************************************
++                          observation.cpp  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#include "comast/observation.h"
++
++void Comast::Observation::setObservation( QString _id, QString _observer, QString _site, QString _session, QString _target, KStarsDateTime _begin, double _faintestStar, double _seeing, QString _scope, QString _eyepiece, QString _lens, QString _filter, QString _result, QString _lang ) {
++    m_Name = _id;
++    m_Observer = _observer;
++    m_Site = _site;
++    m_Session = _session;
++    m_Target = _target;
++    m_Begin = _begin;
++    m_FaintestStar = _faintestStar;
++    m_Seeing = _seeing;
++    m_Scope = _scope;
++    m_Eyepiece = _eyepiece;
++    m_Lens = _lens;
++    m_Filter = _filter;
++    m_Result = _result;
++    m_Lang = _lang;
++}
+Index: kstars/comast/comast.h
+===================================================================
+--- kstars/comast/comast.h	(revision 0)
++++ kstars/comast/comast.h	(revision 1010979)
+@@ -0,0 +1,42 @@
++/***************************************************************************
++                          comast.h  -  description
++
++                             -------------------
++    begin                : Friday June 19, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++
++#ifndef COMAST_H_
++#define COMAST_H_
++
++#include <QString>
++#include <KLocale>
++#include <kmessagebox.h>
++namespace Comast {
++    class Log;
++    class Observer;
++    class Observation;
++    class Equipment;
++    class Eyepiece;
++    class Scope;
++    class Filter;
++    class Imager;
++    class Site;
++    class Session;
++    class Target;
++    class Lens;
++    inline int warningOverwrite( QString message ) {
++        return KMessageBox::warningYesNo( 0, message, i18n("Overwrite"), KGuiItem(i18n("Overwrite")), KGuiItem(i18n("Cancel")) );
++    }
++}
++#endif
+Index: kstars/comast/observeradd.ui
+===================================================================
+--- kstars/comast/observeradd.ui	(revision 0)
++++ kstars/comast/observeradd.ui	(revision 1010979)
+@@ -0,0 +1,78 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>ObserverAdd</class>
++ <widget class="QWidget" name="ObserverAdd">
++  <property name="windowTitle">
++   <string>Add Observer</string>
++  </property>
++  <layout class="QVBoxLayout" name="verticalLayout">
++   <item>
++    <layout class="QFormLayout" name="formLayout">
++     <item row="0" column="0">
++      <widget class="QLabel" name="label">
++       <property name="text">
++        <string>Name</string>
++       </property>
++      </widget>
++     </item>
++     <item row="1" column="0">
++      <widget class="QLabel" name="label_2">
++       <property name="text">
++        <string>Surname</string>
++       </property>
++      </widget>
++     </item>
++     <item row="2" column="0">
++      <widget class="QLabel" name="label_3">
++       <property name="text">
++        <string>Contact</string>
++       </property>
++      </widget>
++     </item>
++     <item row="0" column="1">
++      <widget class="KLineEdit" name="Name"/>
++     </item>
++     <item row="1" column="1">
++      <widget class="KLineEdit" name="Surname"/>
++     </item>
++     <item row="2" column="1">
++      <widget class="KLineEdit" name="Contact"/>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <layout class="QHBoxLayout" name="horizontalLayout">
++     <item>
++      <spacer name="horizontalSpacer">
++       <property name="orientation">
++        <enum>Qt::Horizontal</enum>
++       </property>
++       <property name="sizeHint" stdset="0">
++        <size>
++         <width>40</width>
++         <height>20</height>
++        </size>
++       </property>
++      </spacer>
++     </item>
++     <item>
++      <widget class="QPushButton" name="AddObserver">
++       <property name="text">
++        <string>Add Observer</string>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </item>
++  </layout>
++ </widget>
++ <customwidgets>
++  <customwidget>
++   <class>KLineEdit</class>
++   <extends>QLineEdit</extends>
++   <header>klineedit.h</header>
++  </customwidget>
++ </customwidgets>
++ <resources/>
++ <connections/>
++</ui>
+Index: kstars/comast/observer.h
+===================================================================
+--- kstars/comast/observer.h	(revision 0)
++++ kstars/comast/observer.h	(revision 1010979)
+@@ -0,0 +1,36 @@
++/***************************************************************************
++                          observer.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef OBSERVER_H_
++#define OBSERVER_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++class Comast::Observer {
++    public:
++       QString id() { return m_Id; }
++       QString name() { return m_Name; }
++       QString surname() { return m_Surname; }
++       QString contact() { return m_Contact; }
++       Observer( QString _id,  QString _name ="", QString _surname = "", QString _contact = "" ) { setObserver( _id, _name, _surname, _contact ); }
++       void setObserver( QString _id, QString _name = "", QString _surname= "", QString _contact = "" );
++    private:
++        QString m_Name, m_Surname, m_Contact, m_Id;
++};
++#endif
+Index: kstars/comast/eyepiece.h
+===================================================================
+--- kstars/comast/eyepiece.h	(revision 0)
++++ kstars/comast/eyepiece.h	(revision 1010979)
+@@ -0,0 +1,40 @@
++/***************************************************************************
++                          eyepiece.h  -  description
++
++                             -------------------
++    begin                : Wednesday July 8, 2009
++    copyright            : (C) 2009 by Prakash Mohan
++    email                : prakash.mohan@kdemail.net
++ ***************************************************************************/
++
++/***************************************************************************
++ *                                                                         *
++ *   This program is free software; you can redistribute it and/or modify  *
++ *   it under the terms of the GNU General Public License as published by  *
++ *   the Free Software Foundation; either version 2 of the License, or     *
++ *   (at your option) any later version.                                   *
++ *                                                                         *
++ ***************************************************************************/
++#ifndef EYEPIECE_H_
++#define EYEPIECE_H_
++
++#include "comast/comast.h"
++
++#include <QString>
++
++class Comast::Eyepiece {
++    public:
++        Eyepiece( QString id, QString model, QString vendor, double fov, QString fovUnit, double focalLength ) { setEyepiece( id, model, vendor, fov, fovUnit, focalLength ); }
++        QString id() { return m_Id; }
++        QString name() { return m_Name; }
++        QString model() { return m_Model; }
++        QString vendor() { return m_Vendor; }
++        QString fovUnit() { return m_AppFovUnit; }
++        double appFov() { return m_AppFOV; }
++        double focalLength() { return m_FocalLength; }
++        void setEyepiece( QString _id, QString _model, QString _vendor, double _fov, QString _fovUnit, double _focalLength );
++    private:
++        QString m_Id, m_Model, m_AppFovUnit, m_Vendor, m_Name;
++        double m_AppFOV, m_FocalLength;
++};
++#endif
+Index: kstars/comast/execute.ui
+===================================================================
+--- kstars/comast/execute.ui	(revision 0)
++++ kstars/comast/execute.ui	(revision 1010979)
+@@ -0,0 +1,557 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>Execute</class>
++ <widget class="QWidget" name="Execute">
++  <property name="geometry">
++   <rect>
++    <x>0</x>
++    <y>0</y>
++    <width>623</width>
++    <height>482</height>
++   </rect>
++  </property>
++  <property name="windowTitle">
++   <string>Execute Session</string>
++  </property>
++  <layout class="QHBoxLayout" name="horizontalLayout_6">
++   <item>
++    <layout class="QVBoxLayout" name="verticalLayout_5">
++     <item>
++      <widget class="KUrlLabel" name="SessionURL">
++       <property name="text">
++        <string>Step 1: Session Details</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="KUrlLabel" name="ObservationsURL">
++       <property name="text">
++        <string>Step 2: Observations</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="KListWidget" name="Target"/>
++     </item>
++     <item>
++      <widget class="KUrlLabel" name="AddObject">
++       <property name="maximumSize">
++        <size>
++         <width>158</width>
++         <height>18</height>
++        </size>
++       </property>
++       <property name="text">
++        <string>Add new object to list</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <spacer name="verticalSpacer">
++       <property name="orientation">
++        <enum>Qt::Vertical</enum>
++       </property>
++       <property name="sizeHint" stdset="0">
++        <size>
++         <width>20</width>
++         <height>40</height>
++        </size>
++       </property>
++      </spacer>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <layout class="QVBoxLayout" name="verticalLayout">
++     <item>
++      <widget class="QStackedWidget" name="stackedWidget">
++       <property name="currentIndex">
++        <number>0</number>
++       </property>
++       <widget class="QWidget" name="Session">
++        <layout class="QVBoxLayout" name="verticalLayout_2">
++         <item>
++          <widget class="KTitleWidget" name="ktitlewidget">
++           <property name="text">
++            <string>Enter Session Details:</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <layout class="QFormLayout" name="formLayout">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label_2">
++             <property name="text">
++              <string>Location:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="QPushButton" name="Location">
++             <property name="text">
++              <string>set location</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label_3">
++             <property name="text">
++              <string>Begin:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KDateTimeWidget" name="Begin"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label_4">
++             <property name="text">
++              <string>Weather:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KTextEdit" name="Weather"/>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label_5">
++             <property name="text">
++              <string>Equipment:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="3" column="1">
++            <widget class="KTextEdit" name="Equipment"/>
++           </item>
++           <item row="4" column="0">
++            <widget class="QLabel" name="label_6">
++             <property name="text">
++              <string>Comment:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="4" column="1">
++            <widget class="KTextEdit" name="Comment"/>
++           </item>
++           <item row="5" column="0">
++            <widget class="QLabel" name="label_7">
++             <property name="text">
++              <string>Language:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="5" column="1">
++            <widget class="KLineEdit" name="Language"/>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </widget>
++       <widget class="QWidget" name="TargetDetails">
++        <layout class="QVBoxLayout" name="verticalLayout_4">
++         <item>
++          <widget class="KTitleWidget" name="ktitlewidget_2">
++           <property name="text">
++            <string>View Object Details:</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_8">
++           <item>
++            <widget class="QLabel" name="label_20">
++             <property name="text">
++              <string>Magnitude:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="Mag">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <spacer name="horizontalSpacer_4">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_9">
++           <item>
++            <widget class="QLabel" name="label_22">
++             <property name="text">
++              <string>Type:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="Type">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <spacer name="horizontalSpacer_5">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_10">
++           <item>
++            <widget class="QLabel" name="label_24">
++             <property name="text">
++              <string>Schdeduled Time:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="SchTime">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_4">
++           <item>
++            <widget class="QLabel" name="label_26">
++             <property name="text">
++              <string>Right Ascention:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="RA">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QLabel" name="label_27">
++             <property name="text">
++              <string>Declination</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="Dec">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_3">
++           <item>
++            <widget class="QLabel" name="label_21">
++             <property name="text">
++              <string>Altitude:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="Alt">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="QLabel" name="label_23">
++             <property name="text">
++              <string>Azimuth:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KLineEdit" name="Az">
++             <property name="readOnly">
++              <bool>true</bool>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <widget class="KTitleWidget" name="ktitlewidget_4">
++           <property name="text">
++            <string>Set observing notes for the object:</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_2">
++           <item>
++            <widget class="QLabel" name="label_10">
++             <property name="text">
++              <string>Notes:</string>
++             </property>
++            </widget>
++           </item>
++           <item>
++            <widget class="KTextEdit" name="Notes"/>
++           </item>
++          </layout>
++         </item>
++         <item>
++          <layout class="QHBoxLayout" name="horizontalLayout_5">
++           <item>
++            <spacer name="horizontalSpacer_2">
++             <property name="orientation">
++              <enum>Qt::Horizontal</enum>
++             </property>
++             <property name="sizeHint" stdset="0">
++              <size>
++               <width>40</width>
++               <height>20</height>
++              </size>
++             </property>
++            </spacer>
++           </item>
++           <item>
++            <widget class="QPushButton" name="Slew">
++             <property name="text">
++              <string>Slew Scope</string>
++             </property>
++            </widget>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </widget>
++       <widget class="QWidget" name="page_2">
++        <layout class="QVBoxLayout" name="verticalLayout_3">
++         <item>
++          <widget class="KTitleWidget" name="ktitlewidget_3">
++           <property name="text">
++            <string>Enter the Observation Details:</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <layout class="QFormLayout" name="formLayout_2">
++           <property name="fieldGrowthPolicy">
++            <enum>QFormLayout::ExpandingFieldsGrow</enum>
++           </property>
++           <item row="0" column="0">
++            <widget class="QLabel" name="label_19">
++             <property name="text">
++              <string>Observer</string>
++             </property>
++            </widget>
++           </item>
++           <item row="0" column="1">
++            <widget class="KComboBox" name="Observer"/>
++           </item>
++           <item row="1" column="0">
++            <widget class="QLabel" name="label_11">
++             <property name="text">
++              <string>Scope:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="1" column="1">
++            <widget class="KComboBox" name="Scope"/>
++           </item>
++           <item row="2" column="0">
++            <widget class="QLabel" name="label_12">
++             <property name="text">
++              <string>Eyepiece:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="2" column="1">
++            <widget class="KComboBox" name="Eyepiece"/>
++           </item>
++           <item row="3" column="0">
++            <widget class="QLabel" name="label_17">
++             <property name="text">
++              <string>Lens:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="3" column="1">
++            <widget class="KComboBox" name="Lens"/>
++           </item>
++           <item row="4" column="0">
++            <widget class="QLabel" name="label_18">
++             <property name="text">
++              <string>Filter:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="4" column="1">
++            <widget class="KComboBox" name="Filter"/>
++           </item>
++           <item row="5" column="0">
++            <widget class="QLabel" name="label_14">
++             <property name="text">
++              <string>Seeing:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="5" column="1">
++            <layout class="QHBoxLayout" name="horizontalLayout_11">
++             <item>
++              <widget class="KDoubleNumInput" name="Seeing"/>
++             </item>
++             <item>
++              <widget class="QLabel" name="label_8">
++               <property name="text">
++                <string>arc seconds</string>
++               </property>
++              </widget>
++             </item>
++            </layout>
++           </item>
++           <item row="6" column="0">
++            <widget class="QLabel" name="label_15">
++             <property name="text">
++              <string>Faintest Star:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="6" column="1">
++            <layout class="QHBoxLayout" name="horizontalLayout_7">
++             <item>
++              <widget class="KDoubleNumInput" name="FaintestStar"/>
++             </item>
++             <item>
++              <widget class="QLabel" name="label">
++               <property name="text">
++                <string>(magnitude)</string>
++               </property>
++              </widget>
++             </item>
++            </layout>
++           </item>
++           <item row="7" column="0">
++            <widget class="QLabel" name="label_16">
++             <property name="text">
++              <string>Time:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="7" column="1">
++            <widget class="QTimeEdit" name="Time"/>
++           </item>
++           <item row="8" column="0">
++            <widget class="QLabel" name="label_13">
++             <property name="text">
++              <string>Description:</string>
++             </property>
++            </widget>
++           </item>
++           <item row="8" column="1">
++            <widget class="KTextEdit" name="Description"/>
++           </item>
++          </layout>
++         </item>
++        </layout>
++       </widget>
++      </widget>
++     </item>
++     <item>
++      <layout class="QHBoxLayout" name="horizontalLayout">
++       <item>
++        <spacer name="horizontalSpacer">
++         <property name="orientation">
++          <enum>Qt::Horizontal</enum>
++         </property>
++         <property name="sizeHint" stdset="0">
++          <size>
++           <width>40</width>
++           <height>20</height>
++          </size>
++         </property>
++        </spacer>
++       </item>
++       <item>
++        <widget class="QPushButton" name="NextButton">
++         <property name="text">
++          <string>Next &gt;</string>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++    </layout>
++   </item>
++  </layout>
++ </widget>
++ <customwidgets>
++  <customwidget>
++   <class>KListWidget</class>
++   <extends>QListWidget</extends>
++   <header>klistwidget.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KDoubleNumInput</class>
++   <extends>QWidget</extends>
++   <header>knuminput.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KTitleWidget</class>
++   <extends>QWidget</extends>
++   <header>ktitlewidget.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KLineEdit</class>
++   <extends>QLineEdit</extends>
++   <header>klineedit.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KUrlLabel</class>
++   <extends>QLabel</extends>
++   <header>kurllabel.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KComboBox</class>
++   <extends>QComboBox</extends>
++   <header>kcombobox.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KDateTimeWidget</class>
++   <extends>QWidget</extends>
++   <header>kdatetimewidget.h</header>
++  </customwidget>
++  <customwidget>
++   <class>KTextEdit</class>
++   <extends>QTextEdit</extends>
++   <header>ktextedit.h</header>
++  </customwidget>
++ </customwidgets>
++ <resources/>
++ <connections/>
++</ui>
+Index: kstars/kstars.cpp
+===================================================================
+--- kstars/kstars.cpp	(revision 1010978)
++++ kstars/kstars.cpp	(revision 1010979)
+@@ -276,5 +276,7 @@
+ 
+ ObservingList* KStars::observingList() { return obsList; }
+ 
++Execute* KStars::getExecute() { return execute; }
++
+ #include "kstars.moc"
+ 
+Index: kstars/kstarsui.rc
+===================================================================
+--- kstars/kstarsui.rc	(revision 1010978)
++++ kstars/kstarsui.rc	(revision 1010979)
+@@ -88,6 +88,9 @@
+ 		<Action name="colorschemes" /> <!--This is a KMenuAction-->
+ 		<Action name="fovsymbols" /> <!-- This is a KMenuAction-->
+ 		<Separator />
++        <Action name="ewriter"/>
++        <Action name="obsadd"/>
++		<Separator />
+ 		<Action name="geolocation" />
+ 		<Separator />
+ 		<Action name="options_configure_keybinding"/>
+@@ -96,6 +99,10 @@
+ 		<Action name="startwizard" />
+ 	</Menu>
+ 
++	<Menu name="comast" noMerge="1"><text>&amp;Observation</text>
++        <Action name="execute"/>
++    </Menu>
++
+ 	<Menu name="help"><text>&amp;Help</text>
+ 		<Action name="help_contents"/>
+ 		<Action name="help_tipofday"/>

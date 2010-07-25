@@ -1,0 +1,181 @@
+Project Details
+
+Aim
+
+KStars is a wonderful Desktop Planetarium and it serves as a very useful tool
+for Amateur Astronomers. But it currently lacks a good, versatile observation
+planner.  I propose to create an observation planner for KStars to make it a
+better software and hopefully increase the user base.
+
+
+Motivation
+
+The current version of KStars falls behind other professional and commercially
+available software when it comes to tools for planning observing programmes.
+Implementing such features in KStars would result in a significant rise in the
+user base, and would also provide a good FOSS alternative for the Amateur
+Astronomer.
+
+Being an amateur astronomer myself, I find KStars as an wonderful utility to
+help relish the beauty of the night sky. I find KStars as a good FOSS utility
+for locating celestial objects in observation sessions.  I got into the FOSS
+world and resumed coding because of KStars and I want to do more than just a
+return of favour to it. Since I use KStars for observation I would love to have
+this tool implemented. I am also a part of the Astronomy Club, IIT Madras
+(http://www.astro.iitm.ac.in/Home/) and I would like to use KStars to aid
+learning astronomy and I wish to conduct well planned observation/Astro
+Photography sessions which gives me further reason to take up this project.
+
+
+Main features of the Planner
+
+	+ Create a new tool called the Observation Planner with different modes
+( Something similar to a tabbed version ) for Observation and Planning. ( The
+planning section will have features like Find Object, Whats Up tonight, etc.
+embedded in it and the Observation mode provides a quick reference for details
+about the objects in the list, gives previews, etc.)
+	+ Create an Observation List/Modify the existing list and make it
+usable.  ( Plus integration with whats up tonight and provide an option in the
+right click menu on any object. Also provide an option in the Find Object Dialog
+box to add the object directly to the list )
+	+ Show all the information available for objects in the list ( Like
+Altitude-Azimuth, RA-Dec Coordinates, Magnitude, Object type, etc.)
+	+ Provide options to filter/sort objects on the list using these
+parameters ( For example Sorting the objects based on their rising and setting
+time )
+	+ Create a new format for the observation logs (like COMAST XML
+Schema), provide options for observation notes ( Options like User comments,
+Equipment used, Transparency, User rating)
+	+ Integrate within the tool many features like Find object, FOV editor,
+Sky Calendar (In the process, improve the sky calendar by adding legends, etc. )
+, Altitude versus Time tool, DSS/SDSS image tool, Provide options to get more
+details about the selected object(s) from the Internet.
+	+ Provide a nice user interface for using the tool effectively/ Make it
+really simple and usable.
+	+ With INDI support, provide options for slewing to the selected
+object.
+
+Plus if time permits	
+
+	+ Integration with KOrganizer to provide reminders the user about the
+objects set in the observing list.
+	+ Provide options to help the user in navigating to the desired object
+by giving directions using nearby (relatively Bright) objects.
+	+ If the project on "Community Integration" is completed, provide
+options to directly share the Observation list and the Observation logs.
+	+ Documentation of the project.
+
+
+A Tentative Time line for the Project
+
+	+ Till around May 2 ( That is till the End Semester Exams get over ) get
+familiar with the codebase of KStars and try creating a sample Interface.
+
+	+ Target 1 : ( 3 weeks ) 
+	- Revamp the present Observing list and Create the Interface for the
+	  Observation Planner with the basic information displayed.
+	- Implement the Add to list option in the Find object dialog box, Right
+	  click menu and in the What's up tonight dialog.
+	- Create the filter and sort options in the Planner interface.
+	
+	+ Target 2 : ( 1 week ) 
+	- Implement the new format for Observation logs
+	
+	+ Target 3 : ( 3.5 weeks )
+	- Embed tools like Altitude vs Time, Sky Calendar, DSS/SDSS image and
+	  Sky Calendar within the interface.
+	- Go to the respective tools when clicked on the Previews
+	
+	+ Target 4 : ( 1 week )
+	- Integrate the Observation planner with INDI support, if a telescope is
+	  connected, display the current position of the telescope, provide the
+	  options for slewing to any object in the list.
+	
+Total = 8.5 weeks.
+
+And the remaining time will be spent in cleaning up of code, Bug fixing, etc.
+If there is more time, try and implement the navigation helper and complete the
+documentation.
+
+	
+Expected Outcome
+
+The expected outcome of this project is to have a versatile observation
+planner, like the commercially available 'AstroPlanner' (
+http://www.ilangainc.com/astroplanner/index.shtml ) This is probably what
+KStars needs at the moment, because the other alternative mentioned above is
+really useful and hence is very popular amongst amateur astronomers. 
+
+
+Vitals
+
+Name		: Prakash Mohan
+Email Address	: prak902000@gmail.com
+IRC Nick	: praksh or DrHolmes
+Location	: Chennai, India
+
+About Me
+
+My name is Prakash Mohan, I am a second year undergraduate student in the
+Department of Aerospace engineering at the Indian Institute of Technology
+Madras (IITM). 
+
+I started coding in my 8th class and have built a nice taste for programming in
+general. I am an amateur astronomer and use KStars for aiding in my observation
+for locating celestial objects, conjunctions, etc. KStars really got me into
+the world of development and I've been wanting to do something BIG for it,
+hence I'd really like to work on it this summer. I believe participating in
+this project will encourage me to contribute regularly and become a part of the
+KDE community, besides teaching me loads.  I started contributing to KStars
+about a year back and I've submitted quite a few Bug fixes and Patches ( listed
+in the contributions section ). I'm a member of the kstars-devel mailing list
+and keep track of the discussions on the same.  Because of my involvement with
+these bug fixes, I am quite familiar with some of the classes used in the
+KStars code and the inheritance hierarchy.
+
+I have a good knowledge of C ++, and a coding experience of about 6 years,
+during which I learnt debugging and code organization skills. My keen interest
+in computers led me into the world of programming and I started with coding for
+small Games like Snake, and have done a project where I implemented a Program
+for chess. Recently I wrote a code for solving complex chemical equilibria and
+am hoping to implement it somewhere in kdeedu.
+
+I currently use only FOSS and am enthusiastic about evangelizing, promoting and
+contributing to FOSS. I usually spend some time every week to build KDE trunk
+and try and report any bugs that I find during the build, so am quite
+comfortable with the build processes. I also participate in the discussions of
+the #kde-devel channel in freenode IRC.
+
+I've participated in a KDE hackfest that happened in our college's technical
+festival, and also conducted an Amateur Astronomy workshop in the same where, I
+showcased some salient features in KStars and promoted contribution and usage
+of FOSS in general. I've also attended the talk on KStars by its current
+maintainer Akarsh Simha, in the previous year's Fossconf at India.
+
+
+Contributions to KDE / KStars:
+
+Bug Reports : I've reported on a few bugs before KDE 4.1 and 4.2 releases in
+the IRC channels and in Bugzilla.
+
+Patch to Plasma : 
+
+	+ Patch fixing a build error due to change from ImageEffects to
+PaintUtils.  (SVN commit 827887)
+
+Patches to KStars :
+
+	+ Patch to make the Find dialog more flexible, spaces can be omitted
+when searching for M/NGC/IC objects.  (SVN commit 829313)
+	+ Patch to avoid showing unnamed stars when the user searches for white
+space.  (SVN commit 832959)
+	+ Patch to the conjunctions tool to object if both objects selected are
+the same (SVN commit 867188)
+	+ Patch making the dates explicit next to the moon rise and set times.
+(SVN commit 925493)
+	+ Patch fixing a wrong i18np call in the What's up tonight dialog.  
+(SVN commit 923013)
+	+ Patch implementing a fixme, making a label more intuitive.
+(SVN commit 943208)
+    + Patch removing a ugly i18n argument missing error message. 
+(SVN commit 944978)
